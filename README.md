@@ -1,4 +1,4 @@
-# Audio Normalizer v5
+# Tab Audio Normalizer v5
 
 Lightweight Chrome extension for per-site audio normalization.
 
