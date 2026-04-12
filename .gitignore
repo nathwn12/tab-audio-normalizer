@@ -1,1 +1,13 @@
-release/
+# Release artifacts
+release/*.zip
+
+# Local opencode state
+.opencode/
+
+# Local tests and QA harness
+tests/
+qa/
+
+# OS cruft
+.DS_Store
+Thumbs.db

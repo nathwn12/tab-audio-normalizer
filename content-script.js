@@ -4,9 +4,11 @@ const HOOK_FRESH_MS = 3000;
 const INJECT_TIMEOUT_MS = 5000;
 
 const {
+  DEFAULT_GAIN_DB,
   extractHostname,
   getSiteKey,
-  migrateActiveSites,
+  getSiteConfig,
+  migrateSiteSettings,
   getContentAction,
   getPopupIndicator,
 } = globalThis.TabNormalizerShared;
@@ -15,6 +17,7 @@ const state = {
   hostname: extractHostname(location.href),
   siteKey: getSiteKey(extractHostname(location.href)),
   enabled: false,
+  gainDb: DEFAULT_GAIN_DB,
   injected: false,
   hookAlive: false,
   hookActive: false,
@@ -35,7 +38,7 @@ if (!state.siteKey) {
   console.log('[cs] no hostname, skipping');
 } else {
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !changes.activeSites) return;
+    if (area !== 'local' || (!changes.activeSites && !changes.siteSettings)) return;
     console.log('[cs] storage changed, syncing');
     scheduleSync('storage');
   });
@@ -79,12 +82,21 @@ async function sync(reason) {
   state.syncInFlight = true;
 
   try {
-    const stored = await chrome.storage.local.get({ activeSites: {} });
-    const activeSites = migrateActiveSites(stored.activeSites);
-    const enabled = Boolean(activeSites[state.siteKey]);
+    const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
+    const siteSettings = migrateSiteSettings(stored.siteSettings, stored.activeSites);
+    const config = getSiteConfig(siteSettings, {}, state.siteKey);
+    const enabled = config.enabled;
+    const gainDb = config.gainDb;
     state.enabled = enabled;
+    state.gainDb = gainDb;
 
-    console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason);
+    console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason);
+
+    const shouldPersistMigration = Object.keys(stored.activeSites || {}).length > 0 ||
+      JSON.stringify(siteSettings) !== JSON.stringify(stored.siteSettings || {});
+    if (shouldPersistMigration) {
+      await chrome.storage.local.set({ activeSites: {}, siteSettings });
+    }
 
     const hookAlive = enabled ? await evaluateHookHealth() : state.hookAlive;
     const action = getContentAction({ enabled, injected: state.injected, hookAlive });
@@ -97,7 +109,8 @@ async function sync(reason) {
 
     if (action === 'start') {
       setPendingStart();
-      postToPage('START', { reason });
+      postToPage('START', { reason, gainDb });
+      postToPage('SET_GAIN', { gainDb });
       console.log('[cs] sent START to hook');
       return;
     }
@@ -116,6 +129,10 @@ async function sync(reason) {
       state.hookAlive = false;
       state.hookActive = false;
       state.lastError = '';
+    }
+
+    if (enabled && state.injected) {
+      postToPage('SET_GAIN', { gainDb });
     }
   } finally {
     state.syncInFlight = false;
@@ -145,6 +162,9 @@ function inject() {
   script.onload = () => {
     console.log('[cs] page-hook.js loaded');
     state.injecting = false;
+    if (state.enabled) {
+      postToPage('SET_GAIN', { gainDb: state.gainDb });
+    }
     script.remove();
   };
   script.onerror = (e) => {
@@ -261,9 +281,10 @@ function probePopup() {
 }
 
 async function getDocumentStatus() {
-  const stored = await chrome.storage.local.get({ activeSites: {} });
-  const activeSites = migrateActiveSites(stored.activeSites);
-  const enabled = Boolean(activeSites[state.siteKey]);
+  const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
+  const config = getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
+  const enabled = config.enabled;
+  state.gainDb = config.gainDb;
 
   state.enabled = enabled;
 
@@ -287,6 +308,7 @@ async function getDocumentStatus() {
     enabled,
     hostname: state.hostname,
     siteKey: state.siteKey,
+    gainDb: state.gainDb,
     hookAlive: state.hookAlive,
     hookActive: state.hookActive,
     lastError: enabled ? state.lastError : '',

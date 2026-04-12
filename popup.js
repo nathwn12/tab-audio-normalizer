@@ -1,9 +1,12 @@
 const toggle = document.getElementById('toggle');
+const gainSlider = document.getElementById('gain-slider');
+const gainValueEl = document.getElementById('gain-value');
 const hostnameEl = document.getElementById('hostname');
 const statusDotEl = document.getElementById('status-dot');
 const statusTextEl = document.getElementById('status-text');
 
 const {
+  clampGainDb,
   extractHostname,
   getSiteKey,
   getPopupIndicator,
@@ -15,6 +18,7 @@ let tabId = null;
 let statusTimer = null;
 let hookWasActiveAt = 0;
 let lastHookActive = false;
+let saveGainTimer = null;
 const ACTIVE_STALE_MS = 3000;
 
 void init();
@@ -23,12 +27,21 @@ toggle.addEventListener('change', () => {
   void toggleSite();
 });
 
+gainSlider.addEventListener('input', () => {
+  if (gainSlider.disabled) return;
+  const gainDb = clampGainDb(gainSlider.value);
+  gainSlider.value = String(gainDb);
+  renderGain(gainDb);
+  queueGainSave(gainDb);
+});
+
 async function init() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url) {
       hostnameEl.textContent = 'N/A';
       toggle.disabled = true;
+      gainSlider.disabled = true;
       renderStatus({ indicator: 'gray', text: 'No supported tab.' });
       return;
     }
@@ -39,6 +52,7 @@ async function init() {
     if (!hostname) {
       hostnameEl.textContent = 'N/A';
       toggle.disabled = true;
+      gainSlider.disabled = true;
       renderStatus({ indicator: 'gray', text: 'No supported tab.' });
       return;
     }
@@ -51,7 +65,10 @@ async function init() {
     });
 
     toggle.checked = Boolean(res?.enabled);
+    gainSlider.value = String(clampGainDb(res?.gainDb));
+    renderGain(gainSlider.value);
     toggle.disabled = false;
+    syncGainControlState();
     await refreshDocumentStatus();
     statusTimer = setInterval(() => {
       void refreshDocumentStatus();
@@ -59,6 +76,7 @@ async function init() {
   } catch {
     hostnameEl.textContent = 'Error';
     toggle.disabled = true;
+    gainSlider.disabled = true;
     renderStatus({ indicator: 'red', text: 'Extension status unavailable.' });
   }
 }
@@ -72,24 +90,57 @@ async function toggleSite() {
   if (!toggle.checked) {
     lastHookActive = false;
     hookWasActiveAt = 0;
+    if (saveGainTimer) {
+      clearTimeout(saveGainTimer);
+      saveGainTimer = null;
+    }
   }
 
   toggle.disabled = true;
+  syncGainControlState();
 
   try {
     const res = await chrome.runtime.sendMessage({
       type: 'SET_SITE_STATE',
       siteKey,
       enabled: toggle.checked,
+      gainDb: clampGainDb(gainSlider.value),
     });
 
     toggle.checked = Boolean(res?.enabled);
+    gainSlider.value = String(clampGainDb(res?.gainDb));
+    renderGain(gainSlider.value);
+    syncGainControlState();
     await refreshDocumentStatus();
   } catch {
     toggle.checked = !toggle.checked;
   } finally {
     toggle.disabled = false;
+    syncGainControlState();
   }
+}
+
+function queueGainSave(gainDb) {
+  if (!siteKey || !toggle.checked || gainSlider.disabled) return;
+  if (saveGainTimer) clearTimeout(saveGainTimer);
+  saveGainTimer = setTimeout(() => {
+    saveGainTimer = null;
+    void saveGain(gainDb);
+  }, 120);
+}
+
+async function saveGain(gainDb) {
+  if (!toggle.checked) return;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'SET_SITE_STATE',
+      siteKey,
+      gainDb,
+    });
+    const nextGain = clampGainDb(res?.gainDb);
+    gainSlider.value = String(nextGain);
+    renderGain(nextGain);
+  } catch {}
 }
 
 async function refreshDocumentStatus() {
@@ -154,6 +205,17 @@ function renderStatus({ indicator, text }) {
   statusTextEl.textContent = text;
 }
 
+function renderGain(gainDb) {
+  const numeric = clampGainDb(gainDb);
+  const prefix = numeric > 0 ? '+' : '';
+  gainValueEl.textContent = `${prefix}${numeric.toFixed(1)} dB`;
+}
+
+function syncGainControlState() {
+  gainSlider.disabled = toggle.disabled || !toggle.checked;
+}
+
 window.addEventListener('unload', () => {
   if (statusTimer) clearInterval(statusTimer);
+  if (saveGainTimer) clearTimeout(saveGainTimer);
 });

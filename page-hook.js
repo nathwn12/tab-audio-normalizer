@@ -27,6 +27,7 @@
     observer: null,
     internalWiring: false,
     creatingContext: false,
+    gainDb: 0,
     lastError: '',
   };
 
@@ -47,6 +48,7 @@
     if (event.source !== window || event.data?.channel !== CHANNEL) return;
     if (event.data.type === 'START') start();
     if (event.data.type === 'STOP') stop();
+    if (event.data.type === 'SET_GAIN') setGain(event.data.gainDb);
     if (event.data.type === 'STATUS_REQUEST') reportStatus('HOOK_STATUS', { requestId: event.data.requestId });
   }
 
@@ -66,6 +68,7 @@
 
   function start() {
     state.active = true;
+    state.gainDb = normalizeGainDb(state.gainDb);
     state.lastError = '';
     console.log('[hook] starting');
     try {
@@ -76,8 +79,16 @@
     }
     attachExistingMediaElements();
     routeSessions();
+    updateSessionGains();
+    notifySessionStarts();
     void recoverAudio();
     reportStatus('HOOK_STARTED');
+  }
+
+  function setGain(gainDb) {
+    state.gainDb = normalizeGainDb(gainDb);
+    updateSessionGains();
+    reportStatus('HOOK_STATUS');
   }
 
   function stop() {
@@ -395,6 +406,8 @@
       console.log('[hook] worklet node created, routing audio through normalizer');
       state.lastError = '';
       routeSession(session, workletNode);
+      updateSessionGain(session);
+      notifySessionStart(session);
       reportStatus('HOOK_STATUS');
     } catch (e) {
       console.error('[hook] AudioWorkletNode creation failed:', e.message || e);
@@ -429,6 +442,32 @@
 
     try {
       session.inputNode.connect(session.outputNode);
+    } catch {}
+  }
+
+  function updateSessionGains() {
+    for (const session of sessions) {
+      updateSessionGain(session);
+    }
+  }
+
+  function notifySessionStarts() {
+    for (const session of sessions) {
+      notifySessionStart(session);
+    }
+  }
+
+  function updateSessionGain(session) {
+    if (!session?.workletNode) return;
+    try {
+      session.workletNode.port.postMessage({ type: 'set-gain-db', gainDb: state.gainDb });
+    } catch {}
+  }
+
+  function notifySessionStart(session) {
+    if (!session?.workletNode) return;
+    try {
+      session.workletNode.port.postMessage({ type: 'start-normalizing' });
     } catch {}
   }
 
@@ -527,6 +566,12 @@
 
   function isMediaElement(node) {
     return node instanceof HTMLMediaElement;
+  }
+
+  function normalizeGainDb(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0;
+    return Math.max(-6, Math.min(6, Math.round(numeric * 2) / 2));
   }
 
   function readPendingStart() {

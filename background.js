@@ -2,8 +2,9 @@ importScripts('shared.js');
 
 const {
   getSiteKey,
-  migrateActiveSites,
-  setSiteEnabled,
+  getSiteConfig,
+  migrateSiteSettings,
+  setSiteConfig,
 } = self.TabNormalizerShared;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -17,38 +18,48 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const hostname = String(message.hostname || message.siteKey || '');
         if (!hostname) throw new Error('Missing hostname.');
 
-        const stored = await chrome.storage.local.get({ activeSites: {} });
-        const migrated = migrateActiveSites(stored.activeSites);
+        const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
         const siteKey = getSiteKey(hostname);
-        const nextEnabled = !Boolean(migrated[siteKey]);
-        const activeSites = setSiteEnabled(migrated, siteKey, nextEnabled);
+        const current = getSiteConfig(stored.siteSettings, stored.activeSites, siteKey);
+        const nextEnabled = !current.enabled;
+        const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, { enabled: nextEnabled });
 
-        await chrome.storage.local.set({ activeSites });
-        console.log('[bg] stored:', JSON.stringify(activeSites));
-        return { ok: true, enabled: nextEnabled, siteKey };
+        await chrome.storage.local.set({ activeSites: {}, siteSettings });
+        console.log('[bg] stored:', JSON.stringify(siteSettings));
+        return { ok: true, enabled: nextEnabled, gainDb: current.gainDb, siteKey };
       }
       case 'SET_SITE_STATE': {
         const hostname = String(message.hostname || message.siteKey || '');
         if (!hostname) throw new Error('Missing hostname.');
 
-        const enabled = Boolean(message.enabled);
-        const stored = await chrome.storage.local.get({ activeSites: {} });
-        const migrated = migrateActiveSites(stored.activeSites);
+        const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
         const siteKey = getSiteKey(hostname);
-        const activeSites = setSiteEnabled(migrated, siteKey, enabled);
+        const current = getSiteConfig(stored.siteSettings, stored.activeSites, siteKey);
+        const enabled = Object.prototype.hasOwnProperty.call(message, 'enabled')
+          ? Boolean(message.enabled)
+          : current.enabled;
+        const gainDb = Object.prototype.hasOwnProperty.call(message, 'gainDb')
+          ? message.gainDb
+          : current.gainDb;
+        const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, { enabled, gainDb });
 
-        await chrome.storage.local.set({ activeSites });
-        console.log('[bg] stored:', JSON.stringify(activeSites));
-        return { ok: true, enabled, siteKey };
+        await chrome.storage.local.set({ activeSites: {}, siteSettings });
+        console.log('[bg] stored:', JSON.stringify(siteSettings));
+        return { ok: true, enabled, gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb, siteKey };
       }
       case 'GET_SITE_STATE': {
         const hostname = String(message.hostname || message.siteKey || '');
-        if (!hostname) return { ok: true, enabled: false };
+        if (!hostname) return { ok: true, enabled: false, gainDb: 0 };
 
-        const stored = await chrome.storage.local.get({ activeSites: {} });
-        const migrated = migrateActiveSites(stored.activeSites);
-        const siteKey = getSiteKey(hostname);
-        return { ok: true, enabled: Boolean(migrated[siteKey]), siteKey };
+        const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
+        const config = getSiteConfig(stored.siteSettings, stored.activeSites, hostname);
+        const siteSettings = migrateSiteSettings(stored.siteSettings, stored.activeSites);
+        const shouldPersistMigration = Object.keys(stored.activeSites || {}).length > 0 ||
+          JSON.stringify(siteSettings) !== JSON.stringify(stored.siteSettings || {});
+        if (shouldPersistMigration) {
+          await chrome.storage.local.set({ activeSites: {}, siteSettings });
+        }
+        return { ok: true, enabled: config.enabled, gainDb: config.gainDb, siteKey: config.siteKey };
       }
       default:
         return { ok: false, error: `Unknown: ${message.type}` };
