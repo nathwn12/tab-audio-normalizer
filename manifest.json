@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Audio Normalizer",
+  "version": "5.0.0",
+  "description": "Normalize tab audio.",
+  "icons": {
+    "16": "audio/icon-16.png",
+    "32": "audio/icon-32.png",
+    "48": "audio/icon-48.png",
+    "128": "audio/icon-128.png"
+  },
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["shared.js", "content-script.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-hook.js", "audio/normalizer-worklet.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_icon": {
+      "16": "audio/icon-16.png",
+      "32": "audio/icon-32.png",
+      "48": "audio/icon-48.png",
+      "128": "audio/icon-128.png"
+    },
+    "default_title": "Audio Normalizer",
+    "default_popup": "popup.html"
+  }
+}
