@@ -29,7 +29,7 @@
 
     html, body {
       margin: 0;
-      min-width: 320px;
+      min-width: 340px;
       background:
         radial-gradient(circle at 50% -10%, rgba(255, 0, 60, 0.22), transparent 30%),
         radial-gradient(circle at 100% 0, rgba(191, 0, 255, 0.12), transparent 26%),
@@ -40,7 +40,7 @@
 
     body {
       position: relative;
-      padding: 10px;
+      padding: 8px;
       overflow: hidden;
     }
 
@@ -129,7 +129,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 12px 14px 10px;
+      padding: 10px 12px 8px;
       border-bottom: 1px solid rgba(255, 0, 60, 0.18);
       background:
         linear-gradient(180deg, rgba(18, 18, 18, 0.96), rgba(10, 10, 10, 0.92)),
@@ -146,14 +146,14 @@
     .brand-mark {
       display: grid;
       place-items: center;
-      width: 30px;
-      height: 30px;
+      width: 28px;
+      height: 28px;
       border: 2px solid var(--red);
       color: var(--red);
       background: linear-gradient(180deg, rgba(255, 0, 60, 0.14), rgba(255, 0, 60, 0.04));
       clip-path: polygon(10% 0, 100% 0, 90% 100%, 0 100%);
       box-shadow: 0 0 18px rgba(255, 0, 60, 0.3), inset 0 0 10px rgba(255, 0, 60, 0.1);
-      font-size: 15px;
+      font-size: 14px;
     }
 
     .brand-copy {
@@ -164,7 +164,7 @@
       position: relative;
       display: inline-block;
       color: var(--red);
-      font: 700 24px/1 "Arial Narrow", Impact, sans-serif;
+      font: 700 22px/1 "Arial Narrow", Impact, sans-serif;
       letter-spacing: 0.28em;
       text-shadow: 0 0 10px rgba(255, 0, 60, 0.6), 0 0 26px rgba(255, 0, 60, 0.22);
     }
@@ -226,15 +226,15 @@
     }
 
     .content {
-      padding: 12px;
+      padding: 10px;
       position: relative;
     }
 
     .content::before {
       content: "SYS ONLINE / PEAK CONTROL READY";
       display: block;
-      margin-bottom: 10px;
-      padding: 6px 10px 5px;
+      margin-bottom: 8px;
+      padding: 5px 8px 4px;
       border: 1px solid rgba(255, 0, 60, 0.18);
       background: linear-gradient(90deg, rgba(255, 0, 60, 0.12), rgba(255, 0, 60, 0.02));
       color: var(--red);
@@ -247,7 +247,7 @@
 
     .spectrum-shell {
       position: relative;
-      padding: 10px;
+      padding: 8px;
       border: 1px solid rgba(255, 0, 60, 0.18);
       background: linear-gradient(180deg, rgba(14, 14, 14, 0.96), rgba(6, 6, 6, 0.96));
       box-shadow: inset 0 0 16px rgba(255, 0, 60, 0.04);
@@ -257,8 +257,8 @@
     .spectrum-shell::before {
       content: "INPUT ACTIVITY";
       position: absolute;
-      top: 5px;
-      left: 10px;
+      top: 4px;
+      left: 8px;
       color: var(--text-faint);
       font-size: 7px;
       letter-spacing: 0.34em;
@@ -269,9 +269,9 @@
       display: flex;
       align-items: end;
       gap: 3px;
-      height: 60px;
-      margin-top: 12px;
-      padding: 8px 10px;
+      height: 46px;
+      margin-top: 10px;
+      padding: 6px 8px;
       border: 1px solid rgba(255, 0, 60, 0.12);
       background:
         linear-gradient(180deg, rgba(255, 0, 60, 0.05), transparent 60%),
@@ -307,7 +307,7 @@
     .spectrum span:nth-child(12) { height: 48%; animation-delay: -1.1s; }
 
     .section-label {
-      margin: 12px 0 8px;
+      margin: 10px 0 6px;
       color: var(--text-faint);
       font-size: 8px;
       letter-spacing: 0.38em;
@@ -317,12 +317,12 @@
     .hud-row {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-      margin-top: 8px;
+      gap: 6px;
+      margin-top: 6px;
     }
 
     .hud-chip {
-      padding: 7px 8px 6px;
+      padding: 6px 7px 5px;
       border: 1px solid rgba(255, 0, 60, 0.14);
       background: linear-gradient(180deg, rgba(15, 15, 15, 0.95), rgba(7, 7, 7, 0.95));
       text-transform: uppercase;
@@ -349,7 +349,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 14px;
-      padding: 12px;
+      padding: 10px;
       border: 1px solid rgba(0, 255, 240, 0.2);
       background:
         linear-gradient(180deg, rgba(20, 20, 20, 0.96), rgba(7, 7, 7, 0.98)),
@@ -362,7 +362,69 @@
       min-width: 0;
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 3px;
+    }
+
+    .gain-card {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid rgba(191, 0, 255, 0.2);
+      background:
+        linear-gradient(180deg, rgba(18, 18, 18, 0.96), rgba(7, 7, 7, 0.98)),
+        linear-gradient(90deg, rgba(191, 0, 255, 0.07), transparent 55%);
+      clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+      box-shadow: inset 0 0 14px rgba(191, 0, 255, 0.05);
+    }
+
+    .gain-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .gain-label {
+      color: var(--purple);
+      font-size: 8px;
+      letter-spacing: 0.34em;
+      text-transform: uppercase;
+      text-shadow: 0 0 8px rgba(191, 0, 255, 0.22);
+    }
+
+    #gain-value {
+      color: var(--text);
+      font-size: 12px;
+      text-shadow: 0 0 10px rgba(191, 0, 255, 0.14);
+    }
+
+    .gain-meta {
+      margin-top: 4px;
+      color: var(--text-faint);
+      font-size: 6px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    #gain-slider {
+      width: 100%;
+      margin: 8px 0 6px;
+      accent-color: #bf00ff;
+      cursor: pointer;
+    }
+
+    #gain-slider:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .gain-scale {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text-faint);
+      font-size: 8px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
     }
 
     .site-label {
@@ -432,8 +494,8 @@
       grid-template-columns: auto 1fr;
       gap: 10px 12px;
       align-items: center;
-      margin-top: 12px;
-      padding: 12px;
+      margin-top: 10px;
+      padding: 10px;
       border: 1px solid rgba(255, 230, 0, 0.22);
       background:
         linear-gradient(180deg, rgba(10, 10, 10, 0.98), rgba(5, 5, 5, 0.96)),
@@ -481,7 +543,7 @@
     }
 
     .status-meta {
-      margin-top: 5px;
+      margin-top: 4px;
       color: var(--text-faint);
       font-size: 7px;
       letter-spacing: 0.22em;
@@ -493,8 +555,8 @@
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      margin-top: 12px;
-      padding-top: 10px;
+      margin-top: 10px;
+      padding-top: 8px;
       border-top: 1px solid rgba(255, 0, 60, 0.14);
       color: var(--text-faint);
       font-size: 8px;
@@ -591,6 +653,20 @@
         </div>
         <input type="checkbox" id="toggle" aria-label="Toggle audio normalizer for this site">
       </label>
+
+      <div class="gain-card">
+        <div class="gain-header">
+          <span class="gain-label">Gain Trim</span>
+          <span id="gain-value">+0.0 dB</span>
+        </div>
+        <div class="gain-meta">ReplayGain trim with limiter protection</div>
+        <input type="range" id="gain-slider" min="-6" max="6" step="0.5" value="0" aria-label="Adjust per-site gain trim">
+        <div class="gain-scale" aria-hidden="true">
+          <span>-6 dB</span>
+          <span>0 dB</span>
+          <span>+6 dB</span>
+        </div>
+      </div>
 
       <div class="status" role="status" aria-live="polite">
         <span id="status-dot" class="dot"></span>

@@ -31,6 +31,9 @@ const ABSOLUTE_GATE_DB = -50;
 const RELATIVE_GATE_OFFSET_DB = 10;
 const GATE_PEAK = 0.01;
 const MIN_ANALYSIS_SECONDS = 0.35;
+const STARTUP_ASSIST_SECONDS = 0.75;
+const STARTUP_MAX_BOOST_DB = 3;
+const STARTUP_MAX_CUT_DB = 4;
 
 class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -38,9 +41,13 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
     this.currentGain = 1;
     this.currentLimiterGain = 1;
+    this.userGainDb = 0;
+    this.userGainLinear = 1;
     this.hopPeak = 0;
     this.peakFollower = 0;
     this.analysisFrames = 0;
+    this.startupAssistFrames = Math.max(1, Math.round(sampleRate * STARTUP_ASSIST_SECONDS));
+    this.startupFramesRemaining = this.startupAssistFrames;
 
     // Three-window loudness from V3.5
     this.momentarySq = 0;
@@ -64,6 +71,18 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.hopEnergy = 0;
     this.hopFrames = 0;
     this.hopPowers = [];
+
+    this.port.onmessage = (event) => {
+      if (event.data?.type === 'set-gain-db') {
+        this.userGainDb = clamp(event.data.gainDb, MIN_GAIN_DB, MAX_GAIN_DB);
+        this.userGainLinear = dbToGain(this.userGainDb);
+        return;
+      }
+
+      if (event.data?.type === 'start-normalizing') {
+        this.startupFramesRemaining = this.startupAssistFrames;
+      }
+    };
   }
 
   process(inputs, outputs) {
@@ -117,6 +136,8 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       targetGain = this.computeTargetGain(momentaryDb, shortDb, programDb, blockPeak);
     }
 
+    const startupGain = this.computeStartupAssist(momentaryDb, shortDb, programDb, blockPeak, quietBlock, frameCount);
+
     // Smooth gain changes
     const transitionSeconds = targetGain < this.currentGain ? DOWN_TIME_SECONDS : UP_TIME_SECONDS;
     const smoothing = Math.exp(-frameCount / (sampleRate * transitionSeconds));
@@ -143,7 +164,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
       const loudnessGain = Math.exp(startLog + gainStep * i);
       processLimiterGain = this.stepLimiter(this.limiterTargets[readIndex]);
-      const totalGain = loudnessGain * processLimiterGain;
+      const totalGain = loudnessGain * startupGain * this.userGainLinear * processLimiterGain;
 
       for (let ch = 0; ch < outCh; ch++) {
         const ic = input[ch] ?? input[0];
@@ -246,6 +267,35 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     return targetGain;
   }
 
+  computeStartupAssist(momentaryDb, shortDb, programDb, blockPeak, quietBlock, frameCount) {
+    if (this.startupFramesRemaining <= 0 || quietBlock) {
+      this.startupFramesRemaining = Math.max(0, this.startupFramesRemaining - frameCount);
+      return 1;
+    }
+
+    const comfortMinDb = lufsToInternalDb(COMFORT_MIN_LUFS);
+    const comfortMaxDb = lufsToInternalDb(COMFORT_MAX_LUFS);
+    const loudDb = Math.max(momentaryDb, shortDb);
+    let assistDb = 0;
+
+    if (shortDb < comfortMinDb) {
+      assistDb = Math.min(comfortMinDb - shortDb, STARTUP_MAX_BOOST_DB);
+    } else if (loudDb > comfortMaxDb) {
+      assistDb = -Math.min(loudDb - comfortMaxDb, STARTUP_MAX_CUT_DB);
+    }
+
+    const fade = this.startupFramesRemaining / this.startupAssistFrames;
+    this.startupFramesRemaining = Math.max(0, this.startupFramesRemaining - frameCount);
+
+    if (assistDb === 0) return 1;
+
+    let assistGain = dbToGain(assistDb * fade);
+    if (assistGain > 1 && blockPeak > 0) {
+      assistGain = Math.min(assistGain, CEILING_LINEAR / blockPeak);
+    }
+    return Math.max(0.25, Math.min(4, assistGain));
+  }
+
   calcLimiterTarget(peak) {
     if (!Number.isFinite(peak) || peak <= CEILING_LINEAR) return 1;
     return Math.max(0.05, Math.min(1, CEILING_LINEAR / peak));
@@ -301,6 +351,10 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
 function dbToGain(db) { return Math.pow(10, db / 20); }
 function gainToDb(gain) { return 20 * Math.log10(Math.max(gain, 1e-5)); }
+function clamp(value, min, max) { return Math.max(min, Math.min(max, Number(value) || 0)); }
+
+const MIN_GAIN_DB = -6;
+const MAX_GAIN_DB = 6;
 
 function lufsToInternalDb(lufs) {
   return lufs - LOUDNESS_OFFSET;
