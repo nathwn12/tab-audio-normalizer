@@ -19,6 +19,7 @@ let statusTimer = null;
 let hookWasActiveAt = 0;
 let lastHookActive = false;
 let saveGainTimer = null;
+let statusRequestToken = 0;
 const ACTIVE_STALE_MS = 3000;
 
 void init();
@@ -144,6 +145,7 @@ async function saveGain(gainDb) {
 }
 
 async function refreshDocumentStatus() {
+  const requestToken = ++statusRequestToken;
   const fallbackIndicator = getPopupIndicator({
     enabled: toggle.checked,
     hookAlive: false,
@@ -158,6 +160,7 @@ async function refreshDocumentStatus() {
 
   try {
     const doc = await chrome.tabs.sendMessage(tabId, { type: 'GET_DOCUMENT_STATUS' });
+    if (requestToken !== statusRequestToken) return;
     const enabled = Boolean(doc?.enabled);
     const hookAlive = Boolean(doc?.hookAlive);
     const hookActive = Boolean(doc?.hookActive);
@@ -186,6 +189,7 @@ async function refreshDocumentStatus() {
       }),
     });
   } catch {
+    if (requestToken !== statusRequestToken) return;
     renderStatus({
       indicator: fallbackIndicator,
       text: toggle.checked ? 'Waiting for page hook…' : 'Off for this site.',
