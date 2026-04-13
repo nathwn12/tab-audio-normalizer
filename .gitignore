@@ -11,3 +11,4 @@ qa/
 # OS cruft
 .DS_Store
 Thumbs.db
+*.md

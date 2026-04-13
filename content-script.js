@@ -26,6 +26,7 @@ const state = {
   lastError: '',
   lastStatusAt: 0,
   pendingProbe: null,
+  popupProbe: null,
   syncInFlight: false,
   queuedSyncReason: '',
 };
@@ -213,6 +214,10 @@ async function probeHook() {
     return false;
   }
 
+  if (state.pendingProbe) {
+    return state.pendingProbe.promise;
+  }
+
   const requestId = `probe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const pending = createProbe(requestId);
   postToPage('STATUS_REQUEST', { requestId });
@@ -224,19 +229,25 @@ function createProbe(requestId) {
     clearTimeout(state.pendingProbe.timeoutId);
   }
 
-  return new Promise((resolve) => {
-    state.pendingProbe = {
-      requestId,
-      resolve,
-      timeoutId: setTimeout(() => {
-        if (state.pendingProbe?.requestId !== requestId) return;
-        state.pendingProbe = null;
-        state.hookAlive = false;
-        state.hookActive = false;
-        resolve(false);
-      }, HOOK_TIMEOUT_MS),
-    };
+  let resolvePending = null;
+  const pendingPromise = new Promise((resolve) => {
+    resolvePending = resolve;
   });
+
+  state.pendingProbe = {
+    requestId,
+    promise: pendingPromise,
+    resolve: resolvePending,
+    timeoutId: setTimeout(() => {
+      if (state.pendingProbe?.requestId !== requestId) return;
+      state.pendingProbe = null;
+      state.hookAlive = false;
+      state.hookActive = false;
+      resolvePending(false);
+    }, HOOK_TIMEOUT_MS),
+  };
+
+  return pendingPromise;
 }
 
 function resolveProbe(alive) {
@@ -272,6 +283,8 @@ function probePopup() {
       if (settled) return;
       settled = true;
       window.removeEventListener('message', handler);
+      state.hookAlive = false;
+      state.hookActive = false;
       resolve(false);
     }, HOOK_TIMEOUT_MS);
 
@@ -289,10 +302,12 @@ async function getDocumentStatus() {
   state.enabled = enabled;
 
   if (enabled) {
-    if (state.hookAlive && (Date.now() - state.lastStatusAt) < HOOK_FRESH_MS) {
-      // Fresh status available, no probe needed
-    } else {
-      await probePopup();
+    if (!state.injected && !state.syncInFlight) {
+      scheduleSync('popup-status');
+    }
+
+    if (!state.hookAlive || (Date.now() - state.lastStatusAt) >= HOOK_FRESH_MS) {
+      void ensureFreshPopupStatus();
     }
   }
 
@@ -314,6 +329,18 @@ async function getDocumentStatus() {
     lastError: enabled ? state.lastError : '',
     indicator,
   };
+}
+
+function ensureFreshPopupStatus() {
+  if (state.popupProbe) {
+    return state.popupProbe;
+  }
+
+  state.popupProbe = probePopup().finally(() => {
+    state.popupProbe = null;
+  });
+
+  return state.popupProbe;
 }
 
 function postToPage(type, payload) {
