@@ -20,6 +20,8 @@ let hookWasActiveAt = 0;
 let lastHookActive = false;
 let saveGainTimer = null;
 let statusRequestToken = 0;
+let runtimeActivationState = 'idle';
+let runtimeActivationMessage = '';
 const ACTIVE_STALE_MS = 3000;
 
 void init();
@@ -89,6 +91,8 @@ async function toggleSite() {
   }
 
   if (!toggle.checked) {
+    runtimeActivationState = 'idle';
+    runtimeActivationMessage = '';
     lastHookActive = false;
     hookWasActiveAt = 0;
     if (saveGainTimer) {
@@ -101,19 +105,30 @@ async function toggleSite() {
   syncGainControlState();
 
   try {
+    if (toggle.checked) {
+      runtimeActivationState = 'pending';
+      runtimeActivationMessage = 'Enabling on this tab…';
+      renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+    }
+
     const res = await chrome.runtime.sendMessage({
       type: 'SET_SITE_STATE',
       siteKey,
+      tabId,
       enabled: toggle.checked,
       gainDb: clampGainDb(gainSlider.value),
     });
 
     toggle.checked = Boolean(res?.enabled);
+    runtimeActivationState = String(res?.activation?.state || (toggle.checked ? 'pending' : 'idle'));
+    runtimeActivationMessage = String(res?.activation?.message || '');
     gainSlider.value = String(clampGainDb(res?.gainDb));
     renderGain(gainSlider.value);
     syncGainControlState();
     await refreshDocumentStatus();
   } catch {
+    runtimeActivationState = 'idle';
+    runtimeActivationMessage = '';
     toggle.checked = !toggle.checked;
   } finally {
     toggle.disabled = false;
@@ -164,6 +179,7 @@ async function refreshDocumentStatus() {
     const enabled = Boolean(doc?.enabled);
     const hookAlive = Boolean(doc?.hookAlive);
     const hookActive = Boolean(doc?.hookActive);
+    const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
     if (hookActive) {
@@ -180,26 +196,56 @@ async function refreshDocumentStatus() {
       lastError,
     });
 
+    if (!enabled) {
+      runtimeActivationState = 'idle';
+      runtimeActivationMessage = '';
+    } else if (lastError) {
+      runtimeActivationState = 'idle';
+      runtimeActivationMessage = '';
+    } else if (hookAlive || recentlyActive) {
+      runtimeActivationState = 'active';
+      runtimeActivationMessage = '';
+    } else if (activating || runtimeActivationState === 'pending') {
+      runtimeActivationState = 'pending';
+    } else {
+      runtimeActivationState = 'idle';
+      runtimeActivationMessage = '';
+    }
+
     renderStatus({
       indicator: nextIndicator,
       text: getStatusText({
         enabled,
         hookActive: recentlyActive,
+        activating,
         lastError,
       }),
     });
   } catch {
     if (requestToken !== statusRequestToken) return;
+    if (toggle.checked && runtimeActivationState === 'restricted') {
+      renderStatus({ indicator: 'gray', text: runtimeActivationMessage || 'Enabled. Reload on a supported page.' });
+      return;
+    }
+
     renderStatus({
       indicator: fallbackIndicator,
-      text: toggle.checked ? 'Waiting for page hook…' : 'Off for this site.',
+      text: toggle.checked
+        ? (runtimeActivationMessage || 'Enabled. Waiting for this page.')
+        : 'Off for this site.',
     });
   }
 }
 
-function getStatusText({ enabled, hookActive, lastError }) {
+function getStatusText({ enabled, hookActive, activating, lastError }) {
   if (enabled && lastError) return lastError;
   if (enabled && hookActive) return 'Normalizer active.';
+  if (enabled && runtimeActivationState === 'restricted') {
+    return runtimeActivationMessage || 'Enabled. Reload on a supported page.';
+  }
+  if (enabled && (activating || runtimeActivationState === 'pending')) {
+    return runtimeActivationMessage || 'Enabling on this tab…';
+  }
   if (enabled) return 'Enabled. Waiting for audio.';
   return 'Off for this site.';
 }

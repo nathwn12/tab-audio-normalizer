@@ -12,3 +12,5 @@ qa/
 .DS_Store
 Thumbs.db
 *.md
+*.log
+*.json

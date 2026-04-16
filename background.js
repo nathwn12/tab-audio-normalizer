@@ -1,11 +1,110 @@
 importScripts('shared.js');
 
 const {
+  extractHostname,
   getSiteKey,
   getSiteConfig,
   migrateSiteSettings,
   setSiteConfig,
 } = self.TabNormalizerShared;
+
+const INJECTABLE_FILES = ['shared.js', 'content-script.js'];
+const SUPPORTED_PROTOCOL_PATTERN = /^https?:$/i;
+const RESTRICTED_URL_PATTERN = /^(chrome|chrome-extension|devtools|edge|about|moz-extension):/i;
+const WEBSTORE_URL_PATTERN = /^https?:\/\/(chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)\b/i;
+
+function canAccessTabUrl(url) {
+  if (typeof url !== 'string' || !url || RESTRICTED_URL_PATTERN.test(url) || WEBSTORE_URL_PATTERN.test(url)) {
+    return false;
+  }
+
+  try {
+    return SUPPORTED_PROTOCOL_PATTERN.test(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
+function getTabSiteKey(tab) {
+  if (!canAccessTabUrl(tab?.url)) {
+    return '';
+  }
+
+  return getSiteKey(extractHostname(tab.url));
+}
+
+async function hasInjectedContentScript(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_DOCUMENT_STATUS' });
+    return Boolean(response?.ok);
+  } catch {
+    return false;
+  }
+}
+
+async function injectTabScripts(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    files: INJECTABLE_FILES,
+  });
+}
+
+async function prepareCurrentTabActivation(tabId, siteKey) {
+  if (!tabId) {
+    return { state: 'pending' };
+  }
+
+  let tab = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return { state: 'pending' };
+  }
+
+  if (!canAccessTabUrl(tab?.url)) {
+    return { state: 'restricted', message: 'Enabled. Reload on a supported page.' };
+  }
+
+  if (getTabSiteKey(tab) !== siteKey) {
+    return { state: 'pending' };
+  }
+
+  try {
+    if (!await hasInjectedContentScript(tabId)) {
+      await injectTabScripts(tabId);
+    }
+  } catch {
+    return { state: 'unavailable', message: 'Enabled. Reload if this page stays unavailable.' };
+  }
+
+  return { state: 'pending' };
+}
+
+async function syncExistingTabsForSite(siteKey) {
+  if (!siteKey) {
+    return;
+  }
+
+  const tabs = await chrome.tabs.query({});
+  const matchingTabs = tabs.filter((tab) => tab.id && getTabSiteKey(tab) === siteKey);
+
+  await Promise.all(matchingTabs.map(async (tab) => {
+    if (!tab.id || !canAccessTabUrl(tab.url)) {
+      return;
+    }
+
+    const isInjected = await hasInjectedContentScript(tab.id);
+    if (isInjected) {
+      return;
+    }
+
+    try {
+      await injectTabScripts(tab.id);
+    } catch (error) {
+      console.warn('[bg] skipped tab injection:', tab.id, String(error));
+    }
+  }));
+}
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message?.type) return false;
@@ -25,6 +124,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, { enabled: nextEnabled });
 
         await chrome.storage.local.set({ activeSites: {}, siteSettings });
+        if (nextEnabled) {
+          await syncExistingTabsForSite(siteKey);
+        }
         console.log('[bg] stored:', JSON.stringify(siteSettings));
         return { ok: true, enabled: nextEnabled, gainDb: current.gainDb, siteKey };
       }
@@ -35,6 +137,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
         const siteKey = getSiteKey(hostname);
         const current = getSiteConfig(stored.siteSettings, stored.activeSites, siteKey);
+        const requestedEnabledChange = Object.prototype.hasOwnProperty.call(message, 'enabled');
         const enabled = Object.prototype.hasOwnProperty.call(message, 'enabled')
           ? Boolean(message.enabled)
           : current.enabled;
@@ -42,10 +145,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ? message.gainDb
           : current.gainDb;
         const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, { enabled, gainDb });
+        const shouldActivateCurrentTab = requestedEnabledChange && enabled;
 
         await chrome.storage.local.set({ activeSites: {}, siteSettings });
+        const activation = shouldActivateCurrentTab
+          ? await prepareCurrentTabActivation(message.tabId, siteKey)
+          : { state: 'idle' };
+        if (shouldActivateCurrentTab) {
+          await syncExistingTabsForSite(siteKey);
+        }
         console.log('[bg] stored:', JSON.stringify(siteSettings));
-        return { ok: true, enabled, gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb, siteKey };
+        return { ok: true, enabled, gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb, siteKey, activation };
       }
       case 'GET_SITE_STATE': {
         const hostname = String(message.hostname || message.siteKey || '');
