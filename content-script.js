@@ -1,80 +1,125 @@
-const CHANNEL = 'tab-normalizer-v5';
-const HOOK_TIMEOUT_MS = 1000;
-const HOOK_FRESH_MS = 3000;
-const INJECT_TIMEOUT_MS = 5000;
-
-const {
-  DEFAULT_GAIN_DB,
-  extractHostname,
-  getSiteKey,
-  getSiteConfig,
-  migrateSiteSettings,
-  getContentAction,
-  getPopupIndicator,
-} = globalThis.TabNormalizerShared;
-
-const state = {
-  hostname: extractHostname(location.href),
-  siteKey: getSiteKey(extractHostname(location.href)),
-  enabled: false,
-  gainDb: DEFAULT_GAIN_DB,
-  injected: false,
-  hookAlive: false,
-  hookActive: false,
-  injecting: false,
-  injectStartedAt: 0,
-  lastError: '',
-  lastStatusAt: 0,
-  pendingProbe: null,
-  popupProbe: null,
-  syncInFlight: false,
-  queuedSyncReason: '',
-};
-
-const PENDING_ATTR = 'data-tab-normalizer-pending';
-
-console.log('[cs] loaded on:', state.hostname, location.href);
-
-if (!state.siteKey) {
-  console.log('[cs] no hostname, skipping');
-} else {
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || (!changes.activeSites && !changes.siteSettings)) return;
-    console.log('[cs] storage changed, syncing');
-    scheduleSync('storage');
-  });
-
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type !== 'GET_DOCUMENT_STATUS') return false;
-
-    void getDocumentStatus().then(sendResponse);
-    return true;
-  });
-
-  window.addEventListener('message', (event) => {
-    if (event.source !== window || event.data?.channel !== CHANNEL) return;
-    handleHookMessage(event.data);
-  });
-
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) scheduleSync('visibilitychange');
-  });
-  window.addEventListener('pageshow', () => scheduleSync('pageshow'));
-  window.addEventListener('focus', () => scheduleSync('focus'));
-
-  scheduleSync('init');
-}
-
-function scheduleSync(reason) {
-  if (state.syncInFlight) {
-    state.queuedSyncReason = reason;
+(() => {
+  const existing = globalThis.__tabNormalizerContentScriptV5;
+  if (existing?.reinject) {
+    existing.reinject();
     return;
   }
 
-  void sync(reason);
-}
+  const CHANNEL = 'tab-normalizer-v5';
+  const HOOK_TIMEOUT_MS = 1000;
+  const HOOK_FRESH_MS = 3000;
+  const INJECT_TIMEOUT_MS = 5000;
+  const PENDING_ATTR = 'data-tab-normalizer-pending';
+
+  const {
+    DEFAULT_GAIN_DB,
+    extractHostname,
+    getSiteKey,
+    getSiteConfig,
+    migrateSiteSettings,
+    getContentAction,
+    getPopupIndicator,
+  } = globalThis.TabNormalizerShared;
+
+  const state = {
+    hostname: '',
+    siteKey: '',
+    enabled: false,
+    gainDb: DEFAULT_GAIN_DB,
+    injected: false,
+    hookAlive: false,
+    hookActive: false,
+    injecting: false,
+    injectStartedAt: 0,
+    lastError: '',
+    lastStatusAt: 0,
+    pendingProbe: null,
+    popupProbe: null,
+    syncInFlight: false,
+    queuedSyncReason: '',
+    bootstrapped: false,
+  };
+
+  globalThis.__tabNormalizerContentScriptV5 = {
+    reinject: handleReinject,
+  };
+
+  refreshLocationState();
+  console.log('[cs] loaded on:', state.hostname, location.href);
+  ensureBootstrapListeners();
+  if (state.siteKey) {
+    scheduleSync('init');
+  } else {
+    console.log('[cs] no hostname, skipping');
+  }
+
+  function refreshLocationState() {
+    state.hostname = extractHostname(location.href);
+    state.siteKey = getSiteKey(state.hostname);
+  }
+
+  function ensureBootstrapListeners() {
+    if (state.bootstrapped || !state.siteKey) return;
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || (!changes.activeSites && !changes.siteSettings)) return;
+      console.log('[cs] storage changed, syncing');
+      scheduleSync('storage');
+    });
+
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message?.type !== 'GET_DOCUMENT_STATUS') return false;
+
+      void getDocumentStatus().then(sendResponse);
+      return true;
+    });
+
+    window.addEventListener('message', (event) => {
+      if (event.source !== window || event.data?.channel !== CHANNEL) return;
+      handleHookMessage(event.data);
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) scheduleSync('visibilitychange');
+    });
+    window.addEventListener('pageshow', () => scheduleSync('pageshow'));
+    window.addEventListener('focus', () => scheduleSync('focus'));
+
+    state.bootstrapped = true;
+  }
+
+  function handleReinject() {
+    refreshLocationState();
+    console.log('[cs] reinjected on:', state.hostname, location.href);
+    ensureBootstrapListeners();
+    if (!state.siteKey) return;
+    scheduleSync('reinject');
+  }
+
+  function isActivationPending() {
+    return state.enabled && (state.injecting || state.syncInFlight || Boolean(state.pendingProbe));
+  }
+
+  function scheduleSync(reason) {
+    if (state.syncInFlight) {
+      state.queuedSyncReason = reason;
+      return;
+    }
+
+    void sync(reason);
+  }
 
 async function sync(reason) {
+  refreshLocationState();
+  if (!state.siteKey) {
+    clearPendingStart();
+    state.enabled = false;
+    state.hookAlive = false;
+    state.hookActive = false;
+    state.lastError = '';
+    return;
+  }
+
   if (state.syncInFlight) {
     state.queuedSyncReason = reason;
     return;
@@ -326,6 +371,7 @@ async function getDocumentStatus() {
     gainDb: state.gainDb,
     hookAlive: state.hookAlive,
     hookActive: state.hookActive,
+    activating: isActivationPending(),
     lastError: enabled ? state.lastError : '',
     indicator,
   };
@@ -354,3 +400,4 @@ function setPendingStart() {
 function clearPendingStart() {
   document.documentElement?.removeAttribute(PENDING_ATTR);
 }
+})();
