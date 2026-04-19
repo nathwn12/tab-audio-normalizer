@@ -33,8 +33,15 @@
   }
 
   function getSiteKey(hostname) {
-    const normalized = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
+    let normalized = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
     if (!normalized) return '';
+
+    const bracketedIpv6 = normalized.match(/^\[(.+)\](?::\d+)?$/);
+    if (bracketedIpv6) {
+      normalized = bracketedIpv6[1];
+    } else if (/^[^:]+:\d+$/.test(normalized)) {
+      normalized = normalized.replace(/:\d+$/, '');
+    }
 
     if (normalized === 'localhost' || /^[\d.:]+$/.test(normalized)) {
       return normalized;

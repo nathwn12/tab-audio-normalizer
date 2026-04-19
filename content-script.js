@@ -9,6 +9,8 @@
   const HOOK_TIMEOUT_MS = 1000;
   const HOOK_FRESH_MS = 3000;
   const INJECT_TIMEOUT_MS = 5000;
+  const ACTIVATE_RETRY_COUNT = 5;
+  const ACTIVATE_RETRY_MS = 250;
   const PENDING_ATTR = 'data-tab-normalizer-pending';
 
   const {
@@ -38,6 +40,8 @@
     syncInFlight: false,
     queuedSyncReason: '',
     bootstrapped: false,
+    activationRetryTimer: null,
+    activationRetryCount: 0,
   };
 
   globalThis.__tabNormalizerContentScriptV5 = {
@@ -109,10 +113,46 @@
     void sync(reason);
   }
 
+  function clearActivationRetry() {
+    if (state.activationRetryTimer) {
+      clearTimeout(state.activationRetryTimer);
+      state.activationRetryTimer = null;
+    }
+    state.activationRetryCount = 0;
+  }
+
+  function scheduleActivationRetry(reason) {
+    if (!state.enabled || !state.siteKey) return;
+
+    clearActivationRetry();
+
+    const tick = () => {
+      state.activationRetryTimer = null;
+
+      if (!state.enabled || !state.siteKey) {
+        state.activationRetryCount = 0;
+        return;
+      }
+
+      postToPage('START', { reason, gainDb: state.gainDb });
+      postToPage('SET_GAIN', { gainDb: state.gainDb });
+
+      state.activationRetryCount += 1;
+      if (state.activationRetryCount < ACTIVATE_RETRY_COUNT && (!state.hookAlive || !state.hookActive)) {
+        state.activationRetryTimer = setTimeout(tick, ACTIVATE_RETRY_MS);
+      } else {
+        state.activationRetryCount = 0;
+      }
+    };
+
+    tick();
+  }
+
 async function sync(reason) {
   refreshLocationState();
   if (!state.siteKey) {
     clearPendingStart();
+    clearActivationRetry();
     state.enabled = false;
     state.hookAlive = false;
     state.hookActive = false;
@@ -150,6 +190,7 @@ async function sync(reason) {
     if (action === 'inject') {
       setPendingStart();
       inject();
+      scheduleActivationRetry(reason);
       return;
     }
 
@@ -157,12 +198,14 @@ async function sync(reason) {
       setPendingStart();
       postToPage('START', { reason, gainDb });
       postToPage('SET_GAIN', { gainDb });
+      scheduleActivationRetry(reason);
       console.log('[cs] sent START to hook');
       return;
     }
 
     if (action === 'stop') {
       clearPendingStart();
+      clearActivationRetry();
       postToPage('STOP', { reason });
       state.hookActive = false;
       state.hookAlive = false;
@@ -179,6 +222,7 @@ async function sync(reason) {
 
     if (enabled && state.injected) {
       postToPage('SET_GAIN', { gainDb });
+      scheduleActivationRetry(reason);
     }
   } finally {
     state.syncInFlight = false;
@@ -209,7 +253,9 @@ function inject() {
     console.log('[cs] page-hook.js loaded');
     state.injecting = false;
     if (state.enabled) {
+      postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb });
       postToPage('SET_GAIN', { gainDb: state.gainDb });
+      scheduleActivationRetry('inject-onload');
     }
     script.remove();
   };
@@ -244,6 +290,7 @@ function handleHookMessage(data) {
     state.hookActive = false;
     state.lastError = '';
     state.lastStatusAt = Date.now();
+    clearActivationRetry();
     resolveProbe(false);
   }
 }

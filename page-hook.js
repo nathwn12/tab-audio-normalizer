@@ -6,6 +6,8 @@
 
   const CHANNEL = 'tab-normalizer-v5';
   const PENDING_ATTR = 'data-tab-normalizer-pending';
+  const RECOVERY_BURST_MS = 250;
+  const RECOVERY_BURST_COUNT = 6;
   const WORKLET_URL = new URL(
     'audio/normalizer-worklet.js',
     document.currentScript?.src || location.href,
@@ -21,6 +23,8 @@
   const contextSessions = new WeakMap();
   const mediaSessions = new WeakMap();
   let mediaSessionPromise = null;
+  let recoveryBurstTimer = null;
+  let recoveryBurstRemaining = 0;
 
   const state = {
     active: false,
@@ -58,18 +62,22 @@
 
     if (readPendingStart()) {
       start();
+      return;
     }
+
+    scheduleRecoveryBurst();
   }
 
   function handleLifecycleEvent() {
     if (!state.active) return;
-    void recoverAudio();
+    scheduleRecoveryBurst();
   }
 
   function start() {
     state.active = true;
     state.gainDb = normalizeGainDb(state.gainDb);
     state.lastError = '';
+    clearRecoveryBurst();
     console.log('[hook] starting');
     try {
       bootstrap();
@@ -82,6 +90,7 @@
     updateSessionGains();
     notifySessionStarts();
     void recoverAudio();
+    scheduleRecoveryBurst();
     reportStatus('HOOK_STARTED');
   }
 
@@ -94,6 +103,7 @@
   function stop() {
     if (!state.active) return;
     state.active = false;
+    clearRecoveryBurst();
     console.log('[hook] stopping');
 
     for (const session of sessions) {
@@ -497,6 +507,8 @@
   }
 
   async function recoverAudio() {
+    scanExistingContexts();
+
     for (const session of Array.from(sessions)) {
       if (session.context.state === 'closed') {
         teardownSession(session);
@@ -517,6 +529,42 @@
     attachExistingMediaElements();
     routeSessions();
     reportStatus('HOOK_STATUS');
+  }
+
+  function scheduleRecoveryBurst() {
+    if (!state.active || recoveryBurstTimer) return;
+
+    recoveryBurstRemaining = RECOVERY_BURST_COUNT;
+
+    const tick = async () => {
+      recoveryBurstTimer = null;
+
+      if (!state.active) {
+        recoveryBurstRemaining = 0;
+        return;
+      }
+
+      try {
+        await recoverAudio();
+      } catch {}
+
+      recoveryBurstRemaining -= 1;
+      if (state.active && recoveryBurstRemaining > 0) {
+        recoveryBurstTimer = setTimeout(tick, RECOVERY_BURST_MS);
+      } else {
+        recoveryBurstRemaining = 0;
+      }
+    };
+
+    recoveryBurstTimer = setTimeout(tick, 0);
+  }
+
+  function clearRecoveryBurst() {
+    if (recoveryBurstTimer) {
+      clearTimeout(recoveryBurstTimer);
+      recoveryBurstTimer = null;
+    }
+    recoveryBurstRemaining = 0;
   }
 
   function teardownSession(session) {
