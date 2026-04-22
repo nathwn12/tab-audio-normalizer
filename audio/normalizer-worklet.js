@@ -353,8 +353,8 @@ function dbToGain(db) { return Math.pow(10, db / 20); }
 function gainToDb(gain) { return 20 * Math.log10(Math.max(gain, 1e-5)); }
 function clamp(value, min, max) { return Math.max(min, Math.min(max, Number(value) || 0)); }
 
-const MIN_GAIN_DB = -6;
-const MAX_GAIN_DB = 6;
+const MIN_GAIN_DB = -12;
+const MAX_GAIN_DB = 12;
 
 function lufsToInternalDb(lufs) {
   return lufs - LOUDNESS_OFFSET;

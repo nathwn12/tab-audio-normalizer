@@ -12,6 +12,8 @@
     'audio/normalizer-worklet.js',
     document.currentScript?.src || location.href,
   ).toString();
+  const MIN_GAIN_DB = -12;
+  const MAX_GAIN_DB = 12;
 
   console.log('[hook] loaded, worklet:', WORKLET_URL);
 
@@ -619,7 +621,7 @@
   function normalizeGainDb(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return 0;
-    return Math.max(-6, Math.min(6, Math.round(numeric * 2) / 2));
+    return Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, Math.round(numeric * 2) / 2));
   }
 
   function readPendingStart() {

@@ -20,8 +20,8 @@
     'org.uk',
   ]);
   const DEFAULT_GAIN_DB = 0;
-  const MIN_GAIN_DB = -6;
-  const MAX_GAIN_DB = 6;
+  const MIN_GAIN_DB = -12;
+  const MAX_GAIN_DB = 12;
   const GAIN_STEP_DB = 0.5;
 
   function extractHostname(url) {
