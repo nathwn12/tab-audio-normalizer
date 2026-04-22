@@ -383,6 +383,12 @@
       gap: 12px;
     }
 
+    .gain-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     .gain-label {
       color: var(--purple);
       font-size: 8px;
@@ -395,6 +401,32 @@
       color: var(--text);
       font-size: 12px;
       text-shadow: 0 0 10px rgba(191, 0, 255, 0.14);
+    }
+
+    .gain-reset {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 1px solid rgba(191, 0, 255, 0.18);
+      background: linear-gradient(180deg, rgba(18, 18, 18, 0.92), rgba(8, 8, 8, 0.96));
+      color: var(--text-dim);
+      font: inherit;
+      font-size: 7px;
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+      padding: 4px 8px 3px;
+      cursor: pointer;
+      transition: border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+    }
+
+    .gain-reset:hover:not(:disabled) {
+      border-color: rgba(191, 0, 255, 0.42);
+      color: var(--text);
+      box-shadow: 0 0 10px rgba(191, 0, 255, 0.12);
+    }
+
+    .gain-reset:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
     }
 
     .gain-meta {
@@ -657,14 +689,17 @@
       <div class="gain-card">
         <div class="gain-header">
           <span class="gain-label">Gain Trim</span>
-          <span id="gain-value">+0.0 dB</span>
+          <div class="gain-actions">
+            <span id="gain-value">+0.0 dB</span>
+            <button class="gain-reset" id="gain-reset" type="button">Reset</button>
+          </div>
         </div>
         <div class="gain-meta">ReplayGain trim with limiter protection</div>
-        <input type="range" id="gain-slider" min="-6" max="6" step="0.5" value="0" aria-label="Adjust per-site gain trim">
+        <input type="range" id="gain-slider" min="-12" max="12" step="0.5" value="0" aria-label="Adjust per-site gain trim">
         <div class="gain-scale" aria-hidden="true">
-          <span>-6 dB</span>
+          <span>-12 dB</span>
           <span>0 dB</span>
-          <span>+6 dB</span>
+          <span>+12 dB</span>
         </div>
       </div>
 

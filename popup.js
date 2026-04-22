@@ -1,6 +1,7 @@
 const toggle = document.getElementById('toggle');
 const gainSlider = document.getElementById('gain-slider');
 const gainValueEl = document.getElementById('gain-value');
+const gainResetButtonEl = document.getElementById('gain-reset');
 const hostnameEl = document.getElementById('hostname');
 const statusDotEl = document.getElementById('status-dot');
 const statusTextEl = document.getElementById('status-text');
@@ -36,6 +37,13 @@ gainSlider.addEventListener('input', () => {
   gainSlider.value = String(gainDb);
   renderGain(gainDb);
   queueGainSave(gainDb);
+});
+
+gainResetButtonEl.addEventListener('click', () => {
+  if (gainResetButtonEl.disabled) return;
+  gainSlider.value = '0';
+  renderGain(0);
+  queueGainSave(0);
 });
 
 async function init() {
@@ -263,6 +271,7 @@ function renderGain(gainDb) {
 
 function syncGainControlState() {
   gainSlider.disabled = toggle.disabled || !toggle.checked;
+  gainResetButtonEl.disabled = gainSlider.disabled;
 }
 
 window.addEventListener('unload', () => {
