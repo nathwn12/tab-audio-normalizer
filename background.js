@@ -12,6 +12,7 @@ const INJECTABLE_FILES = ['shared.js', 'content-script.js'];
 const SUPPORTED_PROTOCOL_PATTERN = /^https?:$/i;
 const RESTRICTED_URL_PATTERN = /^(chrome|chrome-extension|devtools|edge|about|moz-extension):/i;
 const WEBSTORE_URL_PATTERN = /^https?:\/\/(chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)\b/i;
+const PENDING_SESSION_KEY = 'pendingSessionStates';
 
 function canAccessTabUrl(url) {
   if (typeof url !== 'string' || !url || RESTRICTED_URL_PATTERN.test(url) || WEBSTORE_URL_PATTERN.test(url)) {
@@ -80,6 +81,94 @@ async function prepareCurrentTabActivation(tabId, siteKey) {
   return { state: 'pending' };
 }
 
+async function getPendingSessionStates() {
+  const stored = await chrome.storage.session.get({ [PENDING_SESSION_KEY]: {} });
+  const pending = stored?.[PENDING_SESSION_KEY];
+  return pending && typeof pending === 'object' ? pending : {};
+}
+
+async function setPendingSessionState(tabId, value) {
+  if (!tabId) return;
+
+  const pending = await getPendingSessionStates();
+  const key = String(tabId);
+  if (value) {
+    pending[key] = value;
+  } else {
+    delete pending[key];
+  }
+
+  await chrome.storage.session.set({ [PENDING_SESSION_KEY]: pending });
+}
+
+async function tryApplyPendingSessionState(tabId, tab) {
+  if (!tabId) return false;
+
+  const pending = await getPendingSessionStates();
+  const entry = pending[String(tabId)];
+  if (!entry) return false;
+
+  if (!canAccessTabUrl(tab?.url)) {
+    return false;
+  }
+
+  if (getTabSiteKey(tab) !== entry.siteKey) {
+    return false;
+  }
+
+  try {
+    if (!await hasInjectedContentScript(tabId)) {
+      await injectTabScripts(tabId);
+    }
+
+    await chrome.tabs.sendMessage(tabId, {
+      type: 'SET_DOCUMENT_STATE',
+      enabled: Boolean(entry.enabled),
+      gainDb: entry.gainDb,
+    });
+    await setPendingSessionState(tabId, null);
+    return true;
+  } catch (error) {
+    console.warn('[bg] pending session apply failed:', tabId, String(error));
+    return false;
+  }
+}
+
+async function softRecheckDocument(tabId, siteKey) {
+  if (!tabId) {
+    return { ok: false, error: 'Missing tabId.' };
+  }
+
+  let tab = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return { ok: false, error: 'Tab unavailable.' };
+  }
+
+  if (!canAccessTabUrl(tab?.url)) {
+    return { ok: true, activation: { state: 'restricted', message: 'Enabled. Reload on a supported page.' } };
+  }
+
+  if (siteKey && getTabSiteKey(tab) !== siteKey) {
+    return { ok: true, activation: { state: 'idle' } };
+  }
+
+  try {
+    if (!await hasInjectedContentScript(tabId)) {
+      await injectTabScripts(tabId);
+    }
+  } catch {
+    return { ok: true, activation: { state: 'unavailable', message: 'Enabled. Waiting for this page.' } };
+  }
+
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: 'SOFT_RECHECK_DOCUMENT' });
+  } catch {
+    return { ok: true, activation: { state: 'unavailable', message: 'Enabled. Waiting for this page.' } };
+  }
+}
+
 async function syncExistingTabsForSite(siteKey) {
   if (!siteKey) {
     return;
@@ -105,6 +194,18 @@ async function syncExistingTabsForSite(siteKey) {
     }
   }));
 }
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tabId || (changeInfo.status !== 'complete' && typeof changeInfo.url !== 'string')) {
+    return;
+  }
+
+  void tryApplyPendingSessionState(tabId, tab);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void setPendingSessionState(tabId, null);
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message?.type) return false;
@@ -146,15 +247,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           : current.gainDb;
         const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, { enabled, gainDb });
         const shouldActivateCurrentTab = requestedEnabledChange && enabled;
+        const persist = message.persist !== false;
 
-        await chrome.storage.local.set({ activeSites: {}, siteSettings });
+        if (persist) {
+          await chrome.storage.local.set({ activeSites: {}, siteSettings });
+          await setPendingSessionState(message.tabId, null);
+        }
         const activation = shouldActivateCurrentTab
           ? await prepareCurrentTabActivation(message.tabId, siteKey)
           : { state: 'idle' };
-        if (shouldActivateCurrentTab) {
+        if (!persist && message.tabId) {
+          const shouldQueueSessionState = activation?.state === 'restricted';
+          await setPendingSessionState(
+            message.tabId,
+            shouldQueueSessionState
+              ? {
+                  siteKey,
+                  enabled,
+                  gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb,
+                }
+              : null,
+          );
+        }
+        if (shouldActivateCurrentTab && persist) {
           await syncExistingTabsForSite(siteKey);
         }
-        console.log('[bg] stored:', JSON.stringify(siteSettings));
+        console.log('[bg]', persist ? 'stored:' : 'transient:', JSON.stringify(siteSettings));
         return { ok: true, enabled, gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb, siteKey, activation };
       }
       case 'GET_SITE_STATE': {
@@ -170,6 +288,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await chrome.storage.local.set({ activeSites: {}, siteSettings });
         }
         return { ok: true, enabled: config.enabled, gainDb: config.gainDb, siteKey: config.siteKey };
+      }
+      case 'SOFT_RECHECK_DOCUMENT': {
+        return softRecheckDocument(message.tabId, String(message.siteKey || ''));
       }
       default:
         return { ok: false, error: `Unknown: ${message.type}` };

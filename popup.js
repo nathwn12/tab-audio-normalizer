@@ -1,7 +1,7 @@
 const toggle = document.getElementById('toggle');
+const remember = document.getElementById('remember');
 const gainSlider = document.getElementById('gain-slider');
 const gainValueEl = document.getElementById('gain-value');
-const gainResetButtonEl = document.getElementById('gain-reset');
 const hostnameEl = document.getElementById('hostname');
 const statusDotEl = document.getElementById('status-dot');
 const statusTextEl = document.getElementById('status-text');
@@ -23,12 +23,17 @@ let saveGainTimer = null;
 let statusRequestToken = 0;
 let runtimeActivationState = 'idle';
 let runtimeActivationMessage = '';
+let softWakePromise = null;
 const ACTIVE_STALE_MS = 3000;
 
 void init();
 
 toggle.addEventListener('change', () => {
   void toggleSite();
+});
+
+remember.addEventListener('change', () => {
+  void handleRememberChange();
 });
 
 gainSlider.addEventListener('input', () => {
@@ -39,11 +44,8 @@ gainSlider.addEventListener('input', () => {
   queueGainSave(gainDb);
 });
 
-gainResetButtonEl.addEventListener('click', () => {
-  if (gainResetButtonEl.disabled) return;
-  gainSlider.value = '0';
-  renderGain(0);
-  queueGainSave(0);
+gainSlider.addEventListener('pointerdown', () => {
+  void requestSliderSoftWake();
 });
 
 async function init() {
@@ -51,9 +53,7 @@ async function init() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url) {
       hostnameEl.textContent = 'N/A';
-      toggle.disabled = true;
-      gainSlider.disabled = true;
-      renderStatus({ indicator: 'gray', text: 'No supported tab.' });
+      disableAll('No supported tab.');
       return;
     }
 
@@ -62,23 +62,23 @@ async function init() {
     siteKey = getSiteKey(hostname);
     if (!hostname) {
       hostnameEl.textContent = 'N/A';
-      toggle.disabled = true;
-      gainSlider.disabled = true;
-      renderStatus({ indicator: 'gray', text: 'No supported tab.' });
+      disableAll('No supported tab.');
       return;
     }
 
     hostnameEl.textContent = siteKey || hostname;
 
-    const res = await chrome.runtime.sendMessage({
-      type: 'GET_SITE_STATE',
-      siteKey,
-    });
+    const [state, settings] = await Promise.all([
+      chrome.runtime.sendMessage({ type: 'GET_SITE_STATE', siteKey }),
+      chrome.storage.local.get({ rememberEnabled: true }),
+    ]);
 
-    toggle.checked = Boolean(res?.enabled);
-    gainSlider.value = String(clampGainDb(res?.gainDb));
+    toggle.checked = Boolean(state?.enabled);
+    gainSlider.value = String(clampGainDb(state?.gainDb));
     renderGain(gainSlider.value);
+    remember.checked = Boolean(settings.rememberEnabled ?? true);
     toggle.disabled = false;
+    remember.disabled = false;
     syncGainControlState();
     await refreshDocumentStatus();
     statusTimer = setInterval(() => {
@@ -86,9 +86,36 @@ async function init() {
     }, 750);
   } catch {
     hostnameEl.textContent = 'Error';
-    toggle.disabled = true;
-    gainSlider.disabled = true;
-    renderStatus({ indicator: 'red', text: 'Extension status unavailable.' });
+    disableAll('Extension status unavailable.');
+  }
+}
+
+function disableAll(statusText) {
+  toggle.disabled = true;
+  remember.disabled = true;
+  gainSlider.disabled = true;
+  renderStatus({ indicator: 'gray', text: statusText });
+}
+
+async function handleRememberChange() {
+  const rememberEnabled = remember.checked;
+  await chrome.storage.local.set({ rememberEnabled });
+
+  if (rememberEnabled && siteKey && tabId) {
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'SET_SITE_STATE',
+        siteKey,
+        tabId,
+        enabled: toggle.checked,
+        gainDb: clampGainDb(gainSlider.value),
+      });
+      applyControlState({
+        enabled: res?.enabled,
+        gainDb: res?.gainDb,
+      });
+      await chrome.tabs.sendMessage(tabId, { type: 'CLEAR_SESSION_OVERRIDE' });
+    } catch {}
   }
 }
 
@@ -113,35 +140,75 @@ async function toggleSite() {
   syncGainControlState();
 
   try {
-    if (toggle.checked) {
-      runtimeActivationState = 'pending';
-      runtimeActivationMessage = 'Enabling on this tab…';
-      renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+    if (remember.checked) {
+      await toggleSitePersistent();
+    } else {
+      await toggleSiteSession();
     }
-
-    const res = await chrome.runtime.sendMessage({
-      type: 'SET_SITE_STATE',
-      siteKey,
-      tabId,
-      enabled: toggle.checked,
-      gainDb: clampGainDb(gainSlider.value),
-    });
-
-    toggle.checked = Boolean(res?.enabled);
-    runtimeActivationState = String(res?.activation?.state || (toggle.checked ? 'pending' : 'idle'));
-    runtimeActivationMessage = String(res?.activation?.message || '');
-    gainSlider.value = String(clampGainDb(res?.gainDb));
-    renderGain(gainSlider.value);
-    syncGainControlState();
     await refreshDocumentStatus();
   } catch {
-    runtimeActivationState = 'idle';
-    runtimeActivationMessage = '';
     toggle.checked = !toggle.checked;
   } finally {
     toggle.disabled = false;
     syncGainControlState();
   }
+}
+
+async function toggleSitePersistent() {
+  if (toggle.checked) {
+    runtimeActivationState = 'pending';
+    runtimeActivationMessage = 'Enabling on this tab…';
+    renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+  }
+
+  const res = await chrome.runtime.sendMessage({
+    type: 'SET_SITE_STATE',
+    siteKey,
+    tabId,
+    enabled: toggle.checked,
+    gainDb: clampGainDb(gainSlider.value),
+  });
+
+  toggle.checked = Boolean(res?.enabled);
+  runtimeActivationState = String(res?.activation?.state || (toggle.checked ? 'pending' : 'idle'));
+  runtimeActivationMessage = String(res?.activation?.message || '');
+  gainSlider.value = String(clampGainDb(res?.gainDb));
+  renderGain(gainSlider.value);
+  syncGainControlState();
+}
+
+async function toggleSiteSession() {
+  if (!tabId) return;
+
+  if (toggle.checked) {
+    runtimeActivationState = 'pending';
+    runtimeActivationMessage = 'Enabling on this tab…';
+    renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+  }
+
+  const res = await chrome.runtime.sendMessage({
+    type: 'SET_SITE_STATE',
+    siteKey,
+    tabId,
+    enabled: toggle.checked,
+    gainDb: clampGainDb(gainSlider.value),
+    persist: false,
+  });
+
+  runtimeActivationState = String(res?.activation?.state || (toggle.checked ? 'pending' : 'idle'));
+  runtimeActivationMessage = String(res?.activation?.message || '');
+
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: 'SET_DOCUMENT_STATE',
+      enabled: toggle.checked,
+      gainDb: clampGainDb(gainSlider.value),
+    });
+  } catch {
+    // Content script may be unreachable on restricted pages.
+  }
+
+  syncGainControlState();
 }
 
 function queueGainSave(gainDb) {
@@ -156,15 +223,52 @@ function queueGainSave(gainDb) {
 async function saveGain(gainDb) {
   if (!toggle.checked) return;
   try {
-    const res = await chrome.runtime.sendMessage({
-      type: 'SET_SITE_STATE',
-      siteKey,
-      gainDb,
-    });
-    const nextGain = clampGainDb(res?.gainDb);
-    gainSlider.value = String(nextGain);
-    renderGain(nextGain);
+    if (remember.checked) {
+      const res = await chrome.runtime.sendMessage({
+        type: 'SET_SITE_STATE',
+        siteKey,
+        gainDb,
+      });
+      const nextGain = clampGainDb(res?.gainDb);
+      gainSlider.value = String(nextGain);
+      renderGain(nextGain);
+    } else if (tabId) {
+      await chrome.tabs.sendMessage(tabId, {
+        type: 'SET_DOCUMENT_STATE',
+        enabled: toggle.checked,
+        gainDb,
+      });
+    }
   } catch {}
+}
+
+async function requestSliderSoftWake() {
+  if (softWakePromise || !siteKey || !tabId) return;
+  if (!toggle.checked && runtimeActivationState !== 'pending' && runtimeActivationState !== 'active') return;
+
+  softWakePromise = (async () => {
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'SOFT_RECHECK_DOCUMENT',
+        siteKey,
+        tabId,
+      });
+      if (res?.activation?.state) {
+        runtimeActivationState = String(res.activation.state);
+        runtimeActivationMessage = String(res.activation.message || '');
+      }
+    } catch {
+      // Restricted or unreachable tabs can fail quietly here.
+    } finally {
+      try {
+        await refreshDocumentStatus();
+      } finally {
+        softWakePromise = null;
+      }
+    }
+  })();
+
+  await softWakePromise;
 }
 
 async function refreshDocumentStatus() {
@@ -189,6 +293,13 @@ async function refreshDocumentStatus() {
     const hookActive = Boolean(doc?.hookActive);
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
+
+    if (!remember.checked) {
+      applyControlState({
+        enabled,
+        gainDb: doc?.gainDb,
+      });
+    }
 
     if (hookActive) {
       hookWasActiveAt = Date.now();
@@ -259,7 +370,7 @@ function getStatusText({ enabled, hookActive, activating, lastError }) {
 }
 
 function renderStatus({ indicator, text }) {
-  statusDotEl.className = `dot${indicator === 'green' ? ' green' : indicator === 'red' ? ' red' : ''}`;
+  statusDotEl.className = indicator === 'green' ? 'green' : indicator === 'red' ? 'red' : '';
   statusTextEl.textContent = text;
 }
 
@@ -269,9 +380,15 @@ function renderGain(gainDb) {
   gainValueEl.textContent = `${prefix}${numeric.toFixed(1)} dB`;
 }
 
+function applyControlState({ enabled, gainDb }) {
+  toggle.checked = Boolean(enabled);
+  gainSlider.value = String(clampGainDb(gainDb));
+  renderGain(gainSlider.value);
+  syncGainControlState();
+}
+
 function syncGainControlState() {
   gainSlider.disabled = toggle.disabled || !toggle.checked;
-  gainResetButtonEl.disabled = gainSlider.disabled;
 }
 
 window.addEventListener('unload', () => {

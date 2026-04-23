@@ -7,398 +7,180 @@
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0a0a0a;
-      --surface: #111111;
-      --surface-2: #161616;
-      --border: #1e1e1e;
+      --bg: #2a2a2a;
+      --surface: #333333;
       --text: #e5e7eb;
-      --text-dim: #8a8f98;
-      --text-faint: #5c6067;
-      --accent: #00e5ff;
-      --accent-dim: rgba(0, 229, 255, 0.12);
-      --brand: #ff003c;
-      --brand-dim: rgba(255, 0, 60, 0.12);
-      --success: #39ff14;
-      --danger: #dc2626;
+      --text-dim: #9ca3af;
+      --text-faint: #6b7280;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --track: #4b5563;
+      --success: #22c55e;
+      --danger: #ef4444;
     }
 
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     html, body {
-      margin: 0;
-      min-width: 320px;
-      background: radial-gradient(ellipse at 50% 0%, rgba(0, 229, 255, 0.05), transparent 55%), var(--bg);
+      min-width: 260px;
+      background: var(--bg);
       color: var(--text);
-      font: 13px/1.45 system-ui, -apple-system, sans-serif;
+      font: 13px/1.4 system-ui, -apple-system, sans-serif;
     }
 
-    body {
-      padding: 10px;
-    }
+    body { padding: 16px; }
 
-    .panel {
-      position: relative;
-      background: linear-gradient(180deg, var(--surface), rgba(8, 8, 8, 0.98));
-      border: 1px solid rgba(0, 229, 255, 0.18);
-      box-shadow:
-        0 0 0 1px rgba(0, 229, 255, 0.05),
-        0 8px 32px rgba(0, 0, 0, 0.55),
-        inset 0 1px 0 rgba(255, 255, 255, 0.03);
-      clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
-      overflow: hidden;
-    }
+    .popup { display: flex; flex-direction: column; gap: 14px; }
 
-    .panel::before {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, var(--accent), transparent);
-      opacity: 0.5;
-    }
-
-    .header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 12px 14px;
-      border-bottom: 1px solid rgba(0, 229, 255, 0.1);
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .brand-mark {
-      display: grid;
-      place-items: center;
-      width: 26px;
-      height: 26px;
-      border: 1.5px solid var(--accent);
-      background: linear-gradient(180deg, rgba(0, 229, 255, 0.1), rgba(0, 229, 255, 0.03));
-      clip-path: polygon(10% 0, 100% 0, 90% 100%, 0 100%);
-    }
-
-    .brand-mark svg {
-      width: 14px;
-      height: 14px;
-    }
-
-    .brand-title {
-      color: var(--text);
-      font-size: 15px;
-      font-weight: 600;
+    .site-name {
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 11px;
+      font-weight: 500;
       letter-spacing: 0.04em;
     }
 
-    .live {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .live-dot {
-      width: 7px;
-      height: 7px;
-      background: var(--success);
-      border-radius: 999px;
-      box-shadow: 0 0 8px rgba(57, 255, 20, 0.55);
-      animation: pulse 2s ease-in-out infinite;
-    }
-
-    .live-label {
-      color: var(--success);
-      font-size: 9px;
-      font-weight: 500;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    .content {
-      padding: 12px 14px 14px;
-    }
-
-    .section {
-      margin-top: 12px;
-    }
-
-    .section:first-child {
-      margin-top: 0;
-    }
-
-    .section-label {
-      display: block;
-      margin-bottom: 6px;
-      color: var(--text-faint);
-      font-size: 9px;
-      font-weight: 500;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    .site-card {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      padding: 10px 12px;
-      background: linear-gradient(180deg, rgba(22, 22, 22, 0.9), rgba(12, 12, 12, 0.95));
-      border: 1px solid rgba(0, 229, 255, 0.12);
-      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
-      cursor: pointer;
-      transition: border-color 160ms ease, box-shadow 160ms ease;
-    }
-
-    .site-card:hover {
-      border-color: rgba(0, 229, 255, 0.22);
-      box-shadow: inset 0 0 12px rgba(0, 229, 255, 0.04);
-    }
-
-    .site-info {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      min-width: 0;
-    }
-
-    #hostname {
-      color: var(--text);
-      font-size: 14px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      word-break: break-word;
-    }
-
-    .site-label {
-      color: var(--text-faint);
-      font-size: 8px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-    }
-
-    #toggle {
-      appearance: none;
-      -webkit-appearance: none;
-      position: relative;
-      flex: 0 0 auto;
-      width: 52px;
-      height: 24px;
-      margin: 0;
-      cursor: pointer;
-      background: linear-gradient(180deg, rgba(8, 8, 8, 1), rgba(14, 14, 14, 1));
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      clip-path: polygon(5px 0, 100% 0, calc(100% - 5px) 100%, 0 100%);
-      transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
-    }
-
-    #toggle::before {
-      content: "";
-      position: absolute;
-      top: 3px;
-      left: 3px;
-      width: 18px;
-      height: 16px;
-      background: #50545c;
-      clip-path: polygon(2px 0, 100% 0, calc(100% - 2px) 100%, 0 100%);
-      transition: left 160ms ease, background 160ms ease, box-shadow 160ms ease;
-    }
-
-    #toggle:checked {
-      background: linear-gradient(180deg, rgba(0, 229, 255, 0.14), rgba(0, 229, 255, 0.06));
-      border-color: var(--accent);
-      box-shadow: 0 0 12px rgba(0, 229, 255, 0.18), inset 0 0 8px rgba(0, 229, 255, 0.08);
-    }
-
-    #toggle:checked::before {
-      left: 30px;
-      background: var(--accent);
-      box-shadow: 0 0 8px rgba(0, 229, 255, 0.45);
-    }
-
-    #toggle:disabled {
-      cursor: not-allowed;
-      opacity: 0.5;
-    }
-
-    .gain-card {
-      padding: 10px 12px;
-      background: linear-gradient(180deg, rgba(22, 22, 22, 0.9), rgba(12, 12, 12, 0.95));
-      border: 1px solid rgba(0, 229, 255, 0.12);
-      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
-    }
-
-    .gain-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-
-    .gain-label {
-      color: var(--text-faint);
-      font-size: 9px;
-      font-weight: 500;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    #gain-value {
-      color: var(--accent);
-      font-size: 13px;
-      font-weight: 600;
+    .gain-readout {
+      text-align: center;
+      font-size: 28px;
+      font-weight: 700;
       font-variant-numeric: tabular-nums;
-      text-shadow: 0 0 10px rgba(0, 229, 255, 0.18);
+      color: var(--text);
     }
 
     #gain-slider {
       width: 100%;
-      margin: 10px 0 6px;
-      accent-color: var(--accent);
+      height: 6px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: var(--track);
+      border-radius: 3px;
+      outline: none;
       cursor: pointer;
     }
 
-    #gain-slider:disabled {
-      cursor: not-allowed;
-      opacity: 0.45;
+    #gain-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      background: var(--accent);
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid var(--bg);
     }
 
-    .gain-scale {
+    #gain-slider::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      background: var(--accent);
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid var(--bg);
+    }
+
+    #gain-slider:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .toggles {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    .toggle-pill {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      color: var(--text-faint);
-      font-size: 8px;
-      letter-spacing: 0.08em;
-    }
-
-    .gain-reset {
-      appearance: none;
-      -webkit-appearance: none;
-      margin-top: 10px;
-      padding: 5px 10px;
-      border: 1px solid rgba(0, 229, 255, 0.15);
-      background: rgba(0, 229, 255, 0.05);
-      color: var(--text-dim);
-      font: inherit;
-      font-size: 10px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      gap: 6px;
+      padding: 6px 12px;
+      background: var(--surface);
+      border-radius: 999px;
       cursor: pointer;
-      transition: all 160ms ease;
+      user-select: none;
+      transition: background 120ms ease;
     }
 
-    .gain-reset:hover:not(:disabled) {
-      border-color: rgba(0, 229, 255, 0.35);
-      color: var(--text);
-      background: rgba(0, 229, 255, 0.1);
+    .toggle-pill:hover { background: #3f3f3f; }
+
+    .toggle-pill input {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 32px;
+      height: 18px;
+      background: var(--track);
+      border-radius: 999px;
+      position: relative;
+      cursor: pointer;
+      outline: none;
+      transition: background 120ms ease;
     }
 
-    .gain-reset:disabled {
-      cursor: not-allowed;
-      opacity: 0.4;
+    .toggle-pill input::before {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      background: #d1d5db;
+      border-radius: 50%;
+      transition: transform 120ms ease;
+    }
+
+    .toggle-pill input:checked { background: var(--accent); }
+    .toggle-pill input:checked::before {
+      transform: translateX(14px);
+      background: #fff;
+    }
+
+    .toggle-pill input:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .toggle-pill span {
+      font-size: 12px;
+      color: var(--text-dim);
+      font-weight: 500;
     }
 
     .status {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 10px 12px;
-      background: linear-gradient(180deg, rgba(22, 22, 22, 0.9), rgba(12, 12, 12, 0.95));
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+      justify-content: center;
+      gap: 6px;
+      color: var(--text-faint);
+      font-size: 11px;
     }
 
-    .dot {
-      width: 10px;
-      height: 10px;
+    #status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
       background: var(--text-faint);
-      border-radius: 999px;
       flex-shrink: 0;
-      transition: background 160ms ease, box-shadow 160ms ease;
     }
 
-    .dot.green {
-      background: var(--success);
-      box-shadow: 0 0 10px rgba(57, 255, 20, 0.45);
-    }
-
-    .dot.red {
-      background: var(--danger);
-      box-shadow: 0 0 10px rgba(220, 38, 38, 0.45);
-    }
-
-    #status-text {
-      color: var(--text-dim);
-      font-size: 12px;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
+    #status-dot.green { background: var(--success); }
+    #status-dot.red { background: var(--danger); }
   </style>
 </head>
 <body>
-  <div class="panel">
-    <header class="header">
-      <div class="brand">
-        <div class="brand-mark">
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="5" y="10" width="4" height="9" rx="2" fill="#00e5ff"/>
-            <rect x="10" y="5" width="4" height="14" rx="2" fill="#00e5ff"/>
-            <rect x="15" y="8" width="4" height="11" rx="2" fill="#00e5ff"/>
-          </svg>
-        </div>
-        <div class="brand-title">Tab Normalizer</div>
-      </div>
-      <div class="live" aria-hidden="true">
-        <span class="live-label">Live</span>
-        <span class="live-dot"></span>
-      </div>
-    </header>
-
-    <div class="content">
-      <div class="section">
-        <span class="section-label">Current Site</span>
-        <label class="site-card" for="toggle">
-          <div class="site-info">
-            <span id="hostname">...</span>
-            <span class="site-label">Per-site normalizer</span>
-          </div>
-          <input type="checkbox" id="toggle" aria-label="Toggle audio normalizer for this site">
-        </label>
-      </div>
-
-      <div class="section">
-        <div class="gain-card">
-          <div class="gain-header">
-            <span class="gain-label">Gain Trim</span>
-            <span id="gain-value">0.0 dB</span>
-          </div>
-          <input type="range" id="gain-slider" min="-12" max="12" step="0.5" value="0" aria-label="Adjust per-site gain trim">
-          <div class="gain-scale" aria-hidden="true">
-            <span>-12 dB</span>
-            <span>0 dB</span>
-            <span>+12 dB</span>
-          </div>
-          <button class="gain-reset" id="gain-reset" type="button">Reset</button>
-        </div>
-      </div>
-
-      <div class="section">
-        <div class="status" role="status" aria-live="polite">
-          <span id="status-dot" class="dot"></span>
-          <span id="status-text">Checking current tab…</span>
-        </div>
-      </div>
+  <div class="popup">
+    <div class="site-name" id="hostname">...</div>
+    <div class="gain-readout" id="gain-value">+0 dB</div>
+    <input type="range" id="gain-slider" min="-12" max="12" step="0.5" value="0" aria-label="Adjust gain">
+    <div class="toggles">
+      <label class="toggle-pill">
+        <input type="checkbox" id="remember" checked aria-label="Remember settings per site">
+        <span>Remember</span>
+      </label>
+      <label class="toggle-pill">
+        <input type="checkbox" id="toggle" aria-label="Toggle normalizer">
+        <span>Active</span>
+      </label>
+    </div>
+    <div class="status">
+      <span id="status-dot"></span>
+      <span id="status-text">Checking…</span>
     </div>
   </div>
-
   <script src="shared.js"></script>
   <script src="popup.js"></script>
 </body>
