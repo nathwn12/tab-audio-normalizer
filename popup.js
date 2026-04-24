@@ -5,6 +5,7 @@ const gainValueEl = document.getElementById('gain-value');
 const hostnameEl = document.getElementById('hostname');
 const statusDotEl = document.getElementById('status-dot');
 const statusTextEl = document.getElementById('status-text');
+const presetButtons = [...document.querySelectorAll('[data-preset]')];
 
 const {
   clampGainDb,
@@ -12,6 +13,12 @@ const {
   getSiteKey,
   getPopupIndicator,
 } = globalThis.TabNormalizerShared;
+
+const PRESETS = {
+  speech: -3,
+  music: 0,
+  boost: 3,
+};
 
 let hostname = '';
 let siteKey = '';
@@ -48,6 +55,14 @@ gainSlider.addEventListener('pointerdown', () => {
   void requestSliderSoftWake();
 });
 
+presetButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    const presetGain = PRESETS[button.dataset.preset];
+    if (typeof presetGain !== 'number') return;
+    applyPreset(presetGain);
+  });
+});
+
 async function init() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -80,6 +95,7 @@ async function init() {
     toggle.disabled = false;
     remember.disabled = false;
     syncGainControlState();
+    syncPresetControlState();
     await refreshDocumentStatus();
     statusTimer = setInterval(() => {
       void refreshDocumentStatus();
@@ -94,6 +110,7 @@ function disableAll(statusText) {
   toggle.disabled = true;
   remember.disabled = true;
   gainSlider.disabled = true;
+  syncPresetControlState();
   renderStatus({ indicator: 'gray', text: statusText });
 }
 
@@ -151,6 +168,7 @@ async function toggleSite() {
   } finally {
     toggle.disabled = false;
     syncGainControlState();
+    syncPresetControlState();
   }
 }
 
@@ -271,6 +289,15 @@ async function requestSliderSoftWake() {
   await softWakePromise;
 }
 
+function applyPreset(gainDb) {
+  if (gainSlider.disabled) return;
+
+  const nextGain = clampGainDb(gainDb);
+  gainSlider.value = String(nextGain);
+  renderGain(nextGain);
+  queueGainSave(nextGain);
+}
+
 async function refreshDocumentStatus() {
   const requestToken = ++statusRequestToken;
   const fallbackIndicator = getPopupIndicator({
@@ -385,10 +412,18 @@ function applyControlState({ enabled, gainDb }) {
   gainSlider.value = String(clampGainDb(gainDb));
   renderGain(gainSlider.value);
   syncGainControlState();
+  syncPresetControlState();
 }
 
 function syncGainControlState() {
   gainSlider.disabled = toggle.disabled || !toggle.checked;
+}
+
+function syncPresetControlState() {
+  const disabled = toggle.disabled || !toggle.checked;
+  for (const button of presetButtons) {
+    button.disabled = disabled;
+  }
 }
 
 window.addEventListener('unload', () => {
