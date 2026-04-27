@@ -14,10 +14,11 @@ Lightweight Chrome extension for per-site audio normalization.
 ```
 audio-normalizeV5/
 ├── manifest.json          # Extension manifest v3
-├── background.js          # Storage management
-├── content-script.js      # Page injection controller
-├── page-hook.js          # Audio API patching
-├── popup.html            # Toggle UI (barebones, inline styles)
+├── background.js          # Storage, injection, site coordination
+├── content-script.js      # Page injection controller + SPA detection
+├── page-hook.js          # Web Audio API patching
+├── shared.js             # Cross-context helpers (site keys, config, migration)
+├── popup.html            # Toggle UI (dark theme, presets, gain slider)
 ├── audio/
 │   ├── normalizer-worklet.js  # Audio processing
 │   └── icon-*.png        # Extension icons
@@ -51,6 +52,7 @@ audio-normalizeV5/
 
 - `storage`: Remember per-site preferences
 - `tabs`: Get current tab info for popup
+- `scripting`: Inject audio processing into page context
 - `host_permissions`: All URLs (required for universal audio normalization)
 
 ## Privacy

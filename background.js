@@ -289,6 +289,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         return { ok: true, enabled: config.enabled, gainDb: config.gainDb, siteKey: config.siteKey };
       }
+      case 'INJECT_PAGE_HOOK': {
+        const tabId = _sender?.tab?.id;
+        const frameId = _sender?.frameId ?? 0;
+        if (!tabId) throw new Error('No tab ID for page hook injection.');
+        await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [frameId] },
+          world: 'MAIN',
+          files: ['page-hook.js'],
+        });
+        return { ok: true };
+      }
       case 'SOFT_RECHECK_DOCUMENT': {
         return softRecheckDocument(message.tabId, String(message.siteKey || ''));
       }
@@ -303,4 +314,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
 
   return true;
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  try {
+    const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
+    const siteSettings = migrateSiteSettings(stored.siteSettings, stored.activeSites);
+    for (const [key, config] of Object.entries(siteSettings)) {
+      if (config.enabled) {
+        await syncExistingTabsForSite(key);
+      }
+    }
+  } catch {
+    // ignore startup re-injection errors
+  }
 });

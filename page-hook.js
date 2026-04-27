@@ -8,10 +8,12 @@
   const PENDING_ATTR = 'data-tab-normalizer-pending';
   const RECOVERY_BURST_MS = 250;
   const RECOVERY_BURST_COUNT = 6;
-  const WORKLET_URL = new URL(
-    'audio/normalizer-worklet.js',
-    document.currentScript?.src || location.href,
-  ).toString();
+  const WORKLET_URL = document.documentElement?.getAttribute('data-tn-worklet-url')
+    || new URL(
+      'audio/normalizer-worklet.js',
+      document.currentScript?.src || location.href,
+    ).toString();
+  document.documentElement?.removeAttribute('data-tn-worklet-url');
   const MIN_GAIN_DB = -12;
   const MAX_GAIN_DB = 12;
 
