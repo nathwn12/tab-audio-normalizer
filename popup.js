@@ -300,6 +300,12 @@ function applyPreset(gainDb) {
 
 async function refreshDocumentStatus() {
   const requestToken = ++statusRequestToken;
+
+  if (!toggle.checked && runtimeActivationState !== 'pending' && runtimeActivationState !== 'active') {
+    renderStatus({ indicator: 'gray', text: 'Off for this site.' });
+    return;
+  }
+
   const fallbackIndicator = getPopupIndicator({
     enabled: toggle.checked,
     hookAlive: false,

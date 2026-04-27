@@ -44,6 +44,7 @@
     bootstrapped: false,
     activationRetryTimer: null,
     activationRetryCount: 0,
+    spaWatchTimer: null,
     hasSessionOverride: false,
     sessionEnabled: false,
     sessionGainDb: DEFAULT_GAIN_DB,
@@ -108,8 +109,34 @@
     });
     window.addEventListener('pageshow', () => scheduleSync('pageshow'));
     window.addEventListener('focus', () => scheduleSync('focus'));
+    window.addEventListener('popstate', () => {
+      refreshLocationState();
+      if (state.siteKey) scheduleSync('popstate');
+    });
+    window.addEventListener('hashchange', () => {
+      refreshLocationState();
+      if (state.siteKey) scheduleSync('hashchange');
+    });
 
     state.bootstrapped = true;
+  }
+
+  function startSpaWatch() {
+    stopSpaWatch();
+    let lastHref = location.href;
+    state.spaWatchTimer = setInterval(() => {
+      if (location.href === lastHref) return;
+      lastHref = location.href;
+      refreshLocationState();
+      if (state.siteKey) scheduleSync('spa-navigation');
+    }, 3000);
+  }
+
+  function stopSpaWatch() {
+    if (state.spaWatchTimer) {
+      clearInterval(state.spaWatchTimer);
+      state.spaWatchTimer = null;
+    }
   }
 
   function handleReinject() {
@@ -192,6 +219,7 @@
     if (!state.siteKey) {
       clearPendingStart();
       clearActivationRetry();
+      stopSpaWatch();
       state.enabled = false;
       state.hookAlive = false;
       state.hookActive = false;
@@ -242,6 +270,7 @@
         setPendingStart();
         inject();
         scheduleActivationRetry(reason);
+        startSpaWatch();
         return;
       }
 
@@ -250,6 +279,7 @@
         postToPage('START', { reason, gainDb });
         postToPage('SET_GAIN', { gainDb });
         scheduleActivationRetry(reason);
+        startSpaWatch();
         console.log('[cs] sent START to hook');
         return;
       }
@@ -257,6 +287,7 @@
       if (action === 'stop') {
         clearPendingStart();
         clearActivationRetry();
+        stopSpaWatch();
         postToPage('STOP', { reason });
         state.hookActive = false;
         state.hookAlive = false;
@@ -266,12 +297,14 @@
 
       clearPendingStart();
       if (!enabled) {
+        stopSpaWatch();
         state.hookAlive = false;
         state.hookActive = false;
         state.lastError = '';
       }
 
       if (enabled && state.injected) {
+        startSpaWatch();
         postToPage('SET_GAIN', { gainDb });
         scheduleActivationRetry(reason);
       }
@@ -296,28 +329,25 @@
     state.injectStartedAt = Date.now();
     state.injected = true;
     state.hookAlive = false;
-    console.log('[cs] injecting page-hook.js');
 
-    const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('page-hook.js');
-    script.async = false;
-    script.onload = () => {
-      console.log('[cs] page-hook.js loaded');
+    const workletUrl = chrome.runtime.getURL('audio/normalizer-worklet.js');
+    document.documentElement?.setAttribute('data-tn-worklet-url', workletUrl);
+
+    chrome.runtime.sendMessage({ type: 'INJECT_PAGE_HOOK' }, (response) => {
       state.injecting = false;
+      if (chrome.runtime.lastError || !response?.ok) {
+        console.error('[cs] page-hook injection failed:', chrome.runtime.lastError?.message || response?.error || 'unknown');
+        state.injected = false;
+        state.lastError = 'Failed to inject page hook.';
+        return;
+      }
+      console.log('[cs] page-hook.js injected via background');
       if (state.enabled) {
         postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb });
         postToPage('SET_GAIN', { gainDb: state.gainDb });
         scheduleActivationRetry('inject-onload');
       }
-      script.remove();
-    };
-    script.onerror = (e) => {
-      console.error('[cs] page-hook.js FAILED to load:', e);
-      state.injecting = false;
-      state.injected = false;
-      state.lastError = 'Failed to inject page hook.';
-    };
-    (document.head || document.documentElement).appendChild(script);
+    });
   }
 
   function handleHookMessage(data) {
@@ -403,6 +433,7 @@
   }
 
   function probePopup() {
+    if (!state.enabled) return Promise.resolve(false);
     if (!state.injected) return Promise.resolve(false);
 
     return new Promise((resolve) => {
