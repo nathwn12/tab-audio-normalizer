@@ -36,6 +36,7 @@
     internalWiring: false,
     creatingContext: false,
     gainDb: 0,
+    blastGuard: false,
     lastError: '',
   };
 
@@ -54,9 +55,10 @@
 
   function handleMessage(event) {
     if (event.source !== window || event.data?.channel !== CHANNEL) return;
-    if (event.data.type === 'START') start();
+    if (event.data.type === 'START') start(event.data);
     if (event.data.type === 'STOP') stop();
     if (event.data.type === 'SET_GAIN') setGain(event.data.gainDb);
+    if (event.data.type === 'SET_BLAST_GUARD') setBlastGuard(event.data.blastGuard);
     if (event.data.type === 'STATUS_REQUEST') reportStatus('HOOK_STATUS', { requestId: event.data.requestId });
   }
 
@@ -77,10 +79,24 @@
     scheduleRecoveryBurst();
   }
 
-  function start() {
+  function start(nextState = null) {
+    const wasActive = state.active;
+    if (nextState && typeof nextState === 'object') {
+      state.gainDb = normalizeGainDb(nextState.gainDb);
+      state.blastGuard = Boolean(nextState.blastGuard);
+    }
     state.active = true;
     state.gainDb = normalizeGainDb(state.gainDb);
     state.lastError = '';
+
+    if (wasActive) {
+      routeSessions();
+      updateSessionGains();
+      updateSessionBlastGuards();
+      reportStatus('HOOK_STATUS');
+      return;
+    }
+
     clearRecoveryBurst();
     console.log('[hook] starting');
     try {
@@ -92,6 +108,7 @@
     attachExistingMediaElements();
     routeSessions();
     updateSessionGains();
+    updateSessionBlastGuards();
     notifySessionStarts();
     void recoverAudio();
     scheduleRecoveryBurst();
@@ -101,6 +118,12 @@
   function setGain(gainDb) {
     state.gainDb = normalizeGainDb(gainDb);
     updateSessionGains();
+    reportStatus('HOOK_STATUS');
+  }
+
+  function setBlastGuard(blastGuard) {
+    state.blastGuard = Boolean(blastGuard);
+    updateSessionBlastGuards();
     reportStatus('HOOK_STATUS');
   }
 
@@ -421,6 +444,7 @@
       state.lastError = '';
       routeSession(session, workletNode);
       updateSessionGain(session);
+      updateSessionBlastGuard(session);
       notifySessionStart(session);
       reportStatus('HOOK_STATUS');
     } catch (e) {
@@ -465,6 +489,12 @@
     }
   }
 
+  function updateSessionBlastGuards() {
+    for (const session of sessions) {
+      updateSessionBlastGuard(session);
+    }
+  }
+
   function notifySessionStarts() {
     for (const session of sessions) {
       notifySessionStart(session);
@@ -475,6 +505,13 @@
     if (!session?.workletNode) return;
     try {
       session.workletNode.port.postMessage({ type: 'set-gain-db', gainDb: state.gainDb });
+    } catch {}
+  }
+
+  function updateSessionBlastGuard(session) {
+    if (!session?.workletNode) return;
+    try {
+      session.workletNode.port.postMessage({ type: 'set-blast-guard', blastGuard: state.blastGuard });
     } catch {}
   }
 

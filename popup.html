@@ -85,6 +85,7 @@
     .toggles {
       display: flex;
       gap: 8px;
+      flex-wrap: wrap;
       justify-content: center;
     }
 
@@ -210,11 +211,15 @@
         <span>Remember</span>
       </label>
       <label class="toggle-pill">
+        <input type="checkbox" id="blast-guard" aria-label="Enable Blast Guard peak protection">
+        <span>Blast Guard</span>
+      </label>
+      <label class="toggle-pill">
         <input type="checkbox" id="toggle" aria-label="Toggle normalizer">
         <span>Active</span>
       </label>
     </div>
-    <div class="mode-note">Core loudness stays fixed at -16 LUFS with a -1 dB ceiling.</div>
+    <div class="mode-note">Core loudness stays fixed near -16 LUFS. Blast Guard adds stricter peak protection.</div>
     <div class="status">
       <span id="status-dot"></span>
       <span id="status-text">Checking…</span>

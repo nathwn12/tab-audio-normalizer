@@ -125,8 +125,8 @@ async function tryApplyPendingSessionState(tabId, tab) {
       type: 'SET_DOCUMENT_STATE',
       enabled: Boolean(entry.enabled),
       gainDb: entry.gainDb,
+      blastGuard: Boolean(entry.blastGuard),
     });
-    await setPendingSessionState(tabId, null);
     return true;
   } catch (error) {
     console.warn('[bg] pending session apply failed:', tabId, String(error));
@@ -229,7 +229,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await syncExistingTabsForSite(siteKey);
         }
         console.log('[bg] stored:', JSON.stringify(siteSettings));
-        return { ok: true, enabled: nextEnabled, gainDb: current.gainDb, siteKey };
+        return {
+          ok: true,
+          enabled: nextEnabled,
+          gainDb: current.gainDb,
+          blastGuard: current.blastGuard,
+          siteKey,
+        };
       }
       case 'SET_SITE_STATE': {
         const hostname = String(message.hostname || message.siteKey || '');
@@ -245,7 +251,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const gainDb = Object.prototype.hasOwnProperty.call(message, 'gainDb')
           ? message.gainDb
           : current.gainDb;
-        const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, { enabled, gainDb });
+        const blastGuard = Object.prototype.hasOwnProperty.call(message, 'blastGuard')
+          ? Boolean(message.blastGuard)
+          : current.blastGuard;
+        const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, {
+          enabled,
+          gainDb,
+          blastGuard,
+        });
         const shouldActivateCurrentTab = requestedEnabledChange && enabled;
         const persist = message.persist !== false;
 
@@ -257,27 +270,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ? await prepareCurrentTabActivation(message.tabId, siteKey)
           : { state: 'idle' };
         if (!persist && message.tabId) {
-          const shouldQueueSessionState = activation?.state === 'restricted';
+          const nextConfig = getSiteConfig(siteSettings, {}, siteKey);
           await setPendingSessionState(
             message.tabId,
-            shouldQueueSessionState
-              ? {
-                  siteKey,
-                  enabled,
-                  gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb,
-                }
-              : null,
+            {
+              siteKey,
+              enabled,
+              gainDb: nextConfig.gainDb,
+              blastGuard: nextConfig.blastGuard,
+            },
           );
         }
         if (shouldActivateCurrentTab && persist) {
           await syncExistingTabsForSite(siteKey);
         }
         console.log('[bg]', persist ? 'stored:' : 'transient:', JSON.stringify(siteSettings));
-        return { ok: true, enabled, gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb, siteKey, activation };
+        return {
+          ok: true,
+          enabled,
+          gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb,
+          blastGuard: getSiteConfig(siteSettings, {}, siteKey).blastGuard,
+          siteKey,
+          activation,
+        };
       }
       case 'GET_SITE_STATE': {
         const hostname = String(message.hostname || message.siteKey || '');
-        if (!hostname) return { ok: true, enabled: false, gainDb: 0 };
+        if (!hostname) return { ok: true, enabled: false, gainDb: 0, blastGuard: false };
 
         const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
         const config = getSiteConfig(stored.siteSettings, stored.activeSites, hostname);
@@ -287,7 +306,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (shouldPersistMigration) {
           await chrome.storage.local.set({ activeSites: {}, siteSettings });
         }
-        return { ok: true, enabled: config.enabled, gainDb: config.gainDb, siteKey: config.siteKey };
+        return {
+          ok: true,
+          enabled: config.enabled,
+          gainDb: config.gainDb,
+          blastGuard: config.blastGuard,
+          siteKey: config.siteKey,
+        };
       }
       case 'INJECT_PAGE_HOOK': {
         const tabId = _sender?.tab?.id;
