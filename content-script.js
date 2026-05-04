@@ -14,6 +14,7 @@
   const PENDING_ATTR = 'data-tab-normalizer-pending';
 
   const {
+    DEFAULT_BLAST_GUARD,
     DEFAULT_GAIN_DB,
     clampGainDb,
     extractHostname,
@@ -29,6 +30,7 @@
     siteKey: '',
     enabled: false,
     gainDb: DEFAULT_GAIN_DB,
+    blastGuard: DEFAULT_BLAST_GUARD,
     injected: false,
     hookAlive: false,
     hookActive: false,
@@ -48,6 +50,7 @@
     hasSessionOverride: false,
     sessionEnabled: false,
     sessionGainDb: DEFAULT_GAIN_DB,
+    sessionBlastGuard: DEFAULT_BLAST_GUARD,
   };
 
   globalThis.__tabNormalizerContentScriptV5 = {
@@ -182,8 +185,9 @@
         return;
       }
 
-      postToPage('START', { reason, gainDb: state.gainDb });
+      postToPage('START', { reason, gainDb: state.gainDb, blastGuard: state.blastGuard });
       postToPage('SET_GAIN', { gainDb: state.gainDb });
+      postToPage('SET_BLAST_GUARD', { blastGuard: state.blastGuard });
 
       state.activationRetryCount += 1;
       if (state.activationRetryCount < ACTIVATE_RETRY_COUNT && (!state.hookAlive || !state.hookActive)) {
@@ -200,7 +204,12 @@
     state.hasSessionOverride = true;
     state.sessionEnabled = Boolean(message.enabled);
     state.sessionGainDb = clampGainDb(message.gainDb);
-    scheduleSync('session-override', { enabled: state.sessionEnabled, gainDb: state.sessionGainDb });
+    state.sessionBlastGuard = Boolean(message.blastGuard);
+    scheduleSync('session-override', {
+      enabled: state.sessionEnabled,
+      gainDb: state.sessionGainDb,
+      blastGuard: state.sessionBlastGuard,
+    });
     return { ok: true };
   }
 
@@ -236,20 +245,23 @@
     state.syncInFlight = true;
 
     try {
-      let enabled, gainDb;
+      let enabled, gainDb, blastGuard;
 
       if (payload && typeof payload.enabled === 'boolean') {
         enabled = payload.enabled;
         gainDb = clampGainDb(payload.gainDb);
+        blastGuard = Boolean(payload.blastGuard);
       } else if (state.hasSessionOverride) {
         enabled = state.sessionEnabled;
         gainDb = state.sessionGainDb;
+        blastGuard = state.sessionBlastGuard;
       } else {
         const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
         const siteSettings = migrateSiteSettings(stored.siteSettings, stored.activeSites);
         const config = getSiteConfig(siteSettings, {}, state.siteKey);
         enabled = config.enabled;
         gainDb = config.gainDb;
+        blastGuard = config.blastGuard;
 
         const shouldPersistMigration = Object.keys(stored.activeSites || {}).length > 0 ||
           JSON.stringify(siteSettings) !== JSON.stringify(stored.siteSettings || {});
@@ -260,8 +272,9 @@
 
       state.enabled = enabled;
       state.gainDb = gainDb;
+      state.blastGuard = blastGuard;
 
-      console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason, 'session:', state.hasSessionOverride);
+      console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'blastGuard:', blastGuard, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason, 'session:', state.hasSessionOverride);
 
       const hookAlive = enabled ? await evaluateHookHealth() : state.hookAlive;
       const action = getContentAction({ enabled, injected: state.injected, hookAlive });
@@ -276,8 +289,9 @@
 
       if (action === 'start') {
         setPendingStart();
-        postToPage('START', { reason, gainDb });
+        postToPage('START', { reason, gainDb, blastGuard });
         postToPage('SET_GAIN', { gainDb });
+        postToPage('SET_BLAST_GUARD', { blastGuard });
         scheduleActivationRetry(reason);
         startSpaWatch();
         console.log('[cs] sent START to hook');
@@ -306,6 +320,7 @@
       if (enabled && state.injected) {
         startSpaWatch();
         postToPage('SET_GAIN', { gainDb });
+        postToPage('SET_BLAST_GUARD', { blastGuard });
         scheduleActivationRetry(reason);
       }
     } finally {
@@ -343,8 +358,9 @@
       }
       console.log('[cs] page-hook.js injected via background');
       if (state.enabled) {
-        postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb });
+        postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb, blastGuard: state.blastGuard });
         postToPage('SET_GAIN', { gainDb: state.gainDb });
+        postToPage('SET_BLAST_GUARD', { blastGuard: state.blastGuard });
         scheduleActivationRetry('inject-onload');
       }
     });
@@ -469,20 +485,23 @@
   }
 
   async function getEffectiveDocumentState() {
-    let enabled, gainDb;
+    let enabled, gainDb, blastGuard;
     if (state.hasSessionOverride) {
       enabled = state.sessionEnabled;
       gainDb = state.sessionGainDb;
+      blastGuard = state.sessionBlastGuard;
     } else {
       const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
       const config = getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
       enabled = config.enabled;
       gainDb = config.gainDb;
+      blastGuard = config.blastGuard;
     }
 
     state.enabled = enabled;
     state.gainDb = gainDb;
-    return { enabled, gainDb };
+    state.blastGuard = blastGuard;
+    return { enabled, gainDb, blastGuard };
   }
 
   async function getDocumentStatus() {
@@ -511,6 +530,7 @@
       hostname: state.hostname,
       siteKey: state.siteKey,
       gainDb: state.gainDb,
+      blastGuard: state.blastGuard,
       hookAlive: state.hookAlive,
       hookActive: state.hookActive,
       activating: isActivationPending(),

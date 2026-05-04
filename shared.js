@@ -20,6 +20,7 @@
     'org.uk',
   ]);
   const DEFAULT_GAIN_DB = 0;
+  const DEFAULT_BLAST_GUARD = false;
   const MIN_GAIN_DB = -12;
   const MAX_GAIN_DB = 12;
   const GAIN_STEP_DB = 0.5;
@@ -82,13 +83,14 @@
 
   function normalizeSiteSettings(value) {
     if (value === true) {
-      return { enabled: true, gainDb: DEFAULT_GAIN_DB };
+      return { enabled: true, gainDb: DEFAULT_GAIN_DB, blastGuard: DEFAULT_BLAST_GUARD };
     }
 
     const raw = value && typeof value === 'object' ? value : {};
     return {
       enabled: Boolean(raw.enabled),
       gainDb: clampGainDb(raw.gainDb),
+      blastGuard: Boolean(raw.blastGuard),
     };
   }
 
@@ -119,7 +121,7 @@
     const migrated = migrateSiteSettings(siteSettings, activeSites);
 
     if (!siteKey) {
-      return { siteKey: '', enabled: false, gainDb: DEFAULT_GAIN_DB };
+      return { siteKey: '', enabled: false, gainDb: DEFAULT_GAIN_DB, blastGuard: DEFAULT_BLAST_GUARD };
     }
 
     return {
@@ -189,9 +191,7 @@
 
   return {
     DEFAULT_GAIN_DB,
-    MIN_GAIN_DB,
-    MAX_GAIN_DB,
-    GAIN_STEP_DB,
+    DEFAULT_BLAST_GUARD,
     clampGainDb,
     extractHostname,
     getSiteKey,
