@@ -1,3 +1,4 @@
+const resetBtnEl = document.getElementById('reset-btn');
 const toggle = document.getElementById('toggle');
 const remember = document.getElementById('remember');
 const blastGuardToggle = document.getElementById('blast-guard');
@@ -60,6 +61,15 @@ gainSlider.addEventListener('pointerdown', () => {
   void requestSliderSoftWake();
 });
 
+resetBtnEl.addEventListener('click', () => {
+  if (gainSlider.disabled) return;
+  gainSlider.value = '0';
+  blastGuardToggle.checked = false;
+  renderGain(0);
+  saveGain(0);
+  saveBlastGuard(false);
+});
+
 presetButtons.forEach((button) => {
   button.addEventListener('click', () => {
     const presetGain = PRESETS[button.dataset.preset];
@@ -72,8 +82,8 @@ async function init() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url) {
-      hostnameEl.textContent = 'N/A';
-      disableAll('No supported tab.');
+      hostnameEl.textContent = 'Unsupported';
+      disableAll('Not available on this page.');
       return;
     }
 
@@ -81,8 +91,14 @@ async function init() {
     hostname = extractHostname(tab.url);
     siteKey = getSiteKey(hostname);
     if (!hostname) {
-      hostnameEl.textContent = 'N/A';
-      disableAll('No supported tab.');
+      hostnameEl.textContent = 'Unsupported';
+      disableAll('Not available on this page.');
+      return;
+    }
+
+    if (!/^https?:\/\//i.test(tab.url)) {
+      hostnameEl.textContent = 'Unsupported';
+      disableAll('Not available on this page.');
       return;
     }
 
@@ -108,7 +124,7 @@ async function init() {
       void refreshDocumentStatus();
     }, 750);
   } catch {
-    hostnameEl.textContent = 'Error';
+    hostnameEl.textContent = 'Unsupported';
     disableAll('Extension status unavailable.');
   }
 }
