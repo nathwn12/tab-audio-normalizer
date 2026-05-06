@@ -332,8 +332,7 @@
       context = new AudioContext({ latencyHint: 'interactive' });
       await context.resume();
     } catch (e) {
-      console.error('[hook] AudioContext creation/resume failed:', e.message || e);
-      throw e;
+      console.warn('[hook] AudioContext resume blocked by autoplay policy:', e.message || e);
     } finally {
       state.creatingContext = false;
     }
@@ -343,6 +342,21 @@
     const session = createSession(context, 'media');
     mediaSessions.set(document, session);
     sessions.add(session);
+
+    if (context.state === 'suspended') {
+      const resumeOnInteraction = async () => {
+        try {
+          await context.resume();
+          console.log('[hook] AudioContext resumed on user interaction');
+        } catch {}
+        document.removeEventListener('click', resumeOnInteraction);
+        document.removeEventListener('touchstart', resumeOnInteraction);
+        document.removeEventListener('keydown', resumeOnInteraction);
+      };
+      document.addEventListener('click', resumeOnInteraction);
+      document.addEventListener('touchstart', resumeOnInteraction);
+      document.addEventListener('keydown', resumeOnInteraction);
+    }
 
     if (state.active && session.readyResolved && !session.workletNode) {
       attachWorklet(session);
