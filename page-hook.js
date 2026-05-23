@@ -33,6 +33,7 @@
   const state = {
     active: false,
     observer: null,
+    recovering: false,
     internalWiring: false,
     creatingContext: false,
     gainDb: 0,
@@ -74,9 +75,15 @@
     scheduleRecoveryBurst();
   }
 
+  let lifecycleTimer = null;
+
   function handleLifecycleEvent() {
     if (!state.active) return;
-    scheduleRecoveryBurst();
+    if (lifecycleTimer) return;
+    lifecycleTimer = setTimeout(() => {
+      lifecycleTimer = null;
+      scheduleRecoveryBurst();
+    }, 200);
   }
 
   function start(nextState = null) {
@@ -198,15 +205,29 @@
   function scanExistingContexts() {
     const candidates = new Set();
 
-    try {
-      for (const key of Object.keys(window)) {
-        if (!/audio|ctx|context/i.test(key)) continue;
-        try {
-          const val = window[key];
-          if (val && typeof val === 'object') candidates.add(val);
-        } catch {}
-      }
-    } catch {}
+    // Fast path: check known common variable names
+    const knownKeys = ['audioCtx', 'audioContext', 'ctx', 'context', 'actx', 'ac'];
+    for (const key of knownKeys) {
+      try {
+        const val = window[key];
+        if (val && typeof val === 'object') candidates.add(val);
+      } catch {}
+    }
+
+    // Fallback: scan window keys with audio/context pattern, capped at 200
+    if (candidates.size === 0) {
+      let scanned = 0;
+      try {
+        for (const key of Object.keys(window)) {
+          if (scanned++ > 200) break;
+          if (!/audio|ctx|context/i.test(key)) continue;
+          try {
+            const val = window[key];
+            if (val && typeof val === 'object') candidates.add(val);
+          } catch {}
+        }
+      } catch {}
+    }
 
     for (const c of candidates) {
       try {
@@ -258,22 +279,26 @@
   function observeDom() {
     if (state.observer) return;
 
+    let observerTimer = null;
+
     state.observer = new MutationObserver((mutations) => {
       if (!state.active) return;
+      if (observerTimer) return;
 
-      for (const m of mutations) {
-        for (const node of m.addedNodes) {
-          if (!(node instanceof Element)) continue;
-
-          if (isMediaElement(node)) {
-            void attachMediaElement(node);
-          }
-
-          for (const media of node.querySelectorAll?.('audio, video') ?? []) {
-            void attachMediaElement(media);
+      observerTimer = setTimeout(() => {
+        observerTimer = null;
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (!(node instanceof Element)) continue;
+            if (isMediaElement(node)) {
+              void attachMediaElement(node);
+            }
+            for (const media of node.querySelectorAll?.('audio, video') ?? []) {
+              void attachMediaElement(media);
+            }
           }
         }
-      }
+      }, 100);
     });
 
     state.observer.observe(document.documentElement || document, {
@@ -451,7 +476,13 @@
         console.error('[hook] worklet processor error:', e);
         session.workletNode = null;
         setError('Audio processor error. Retrying…');
-        void recoverAudio();
+        if (!state.recovering) {
+          state.recovering = true;
+          setTimeout(() => {
+            state.recovering = false;
+            void recoverAudio();
+          }, 500);
+        }
       };
 
       console.log('[hook] worklet node created, routing audio through normalizer');

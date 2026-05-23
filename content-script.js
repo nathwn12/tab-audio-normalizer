@@ -74,10 +74,16 @@
   function ensureBootstrapListeners() {
     if (state.bootstrapped || !state.siteKey) return;
 
+    let storageChangeTimer = null;
+
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local' || (!changes.activeSites && !changes.siteSettings)) return;
-      console.log('[cs] storage changed, syncing');
-      scheduleSync('storage');
+      if (storageChangeTimer) return;
+      storageChangeTimer = setTimeout(() => {
+        storageChangeTimer = null;
+        console.log('[cs] storage changed, syncing');
+        scheduleSync('storage');
+      }, 100);
     });
 
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -132,7 +138,7 @@
       lastHref = location.href;
       refreshLocationState();
       if (state.siteKey) scheduleSync('spa-navigation');
-    }, 3000);
+    }, 5000);
   }
 
   function stopSpaWatch() {

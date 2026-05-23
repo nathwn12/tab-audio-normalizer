@@ -403,7 +403,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 }
 
 function dbToGain(db) { return Math.pow(10, db / 20); }
-function gainToDb(gain) { return 20 * Math.log10(Math.max(gain, 1e-5)); }
+function gainToDb(gain) { return 20 * Math.log10(Math.max(Number(gain) || 1e-5, 1e-5)); }
 function clamp(value, min, max) { return Math.max(min, Math.min(max, Number(value) || 0)); }
 
 const MIN_GAIN_DB = -12;
@@ -426,11 +426,20 @@ function applySoftKnee(sample, ceiling, kneeDb) {
   return Math.sign(sample) * limited;
 }
 
+let truePeakCounter = 0;
+
 function pushTruePeak(history, sample) {
   history[0] = history[1];
   history[1] = history[2];
   history[2] = history[3];
   history[3] = sample;
+
+  truePeakCounter = (truePeakCounter + 1) & 3;
+  if (truePeakCounter !== 0) {
+    const abs2 = Math.abs(history[2]);
+    const abs3 = Math.abs(history[3]);
+    return abs2 > abs3 ? abs2 : abs3;
+  }
 
   let peak = Math.abs(history[2]);
   const a0 = -0.5 * history[0] + 1.5 * history[1] - 1.5 * history[2] + 0.5 * history[3];
