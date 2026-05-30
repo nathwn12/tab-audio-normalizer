@@ -219,34 +219,6 @@
     await storageSet({ siteToggles: toggles });
   }
 
-  async function migrateLegacyState(siteKey) {
-    const result = /** @type {Record<string, unknown>} */ (await storageGet(['activeSites', 'siteSettings']));
-    let migrated = false;
-    if (result.siteSettings && result.siteSettings[siteKey]) {
-      const existing = await loadSiteState(siteKey);
-      if (existing === null) {
-        await saveSiteState(siteKey, result.siteSettings[siteKey].enabled);
-        migrated = true;
-      }
-    }
-    if (!migrated && result.activeSites && siteKey in /** @type {Record<string, boolean>} */ (result.activeSites)) {
-      const existing = await loadSiteState(siteKey);
-      if (existing === null) {
-        await saveSiteState(siteKey, result.activeSites[siteKey]);
-        migrated = true;
-      }
-    }
-    return migrated;
-  }
-
-  function onStorageChanged(callback) {
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.siteToggles) {
-        callback(changes.siteToggles.newValue || {});
-      }
-    });
-  }
-
   return {
     DEFAULT_GAIN_DB,
     DEFAULT_BLAST_GUARD,
@@ -266,7 +238,6 @@
     storageSet,
     loadSiteState,
     saveSiteState,
-    migrateLegacyState,
-    onStorageChanged,
+
   };
 });

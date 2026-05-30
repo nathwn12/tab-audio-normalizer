@@ -47,8 +47,7 @@ interface TabNormalizerSharedApi {
   storageSet: (items: Record<string, unknown>) => Promise<void>;
   loadSiteState: (siteKey: string) => Promise<boolean | null>;
   saveSiteState: (siteKey: string, enabled: boolean) => Promise<void>;
-  migrateLegacyState: (siteKey: string) => Promise<boolean>;
-  onStorageChanged: (callback: (toggles: Record<string, boolean>) => void) => void;
+
 }
 
 interface Window {
