@@ -1,4 +1,4 @@
-importScripts('shared.js');
+try { importScripts('shared.js'); } catch {} // Firefox uses background.scripts instead
 
 const {
   extractHostname,
@@ -13,6 +13,7 @@ const SUPPORTED_PROTOCOL_PATTERN = /^https?:$/i;
 const RESTRICTED_URL_PATTERN = /^(chrome|chrome-extension|devtools|edge|about|moz-extension):/i;
 const WEBSTORE_URL_PATTERN = /^https?:\/\/(chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)\b/i;
 const PENDING_SESSION_KEY = 'pendingSessionStates';
+const pendingSessionStates = new Map();
 
 function canAccessTabUrl(url) {
   if (typeof url !== 'string' || !url || RESTRICTED_URL_PATTERN.test(url) || WEBSTORE_URL_PATTERN.test(url)) {
@@ -43,11 +44,29 @@ async function hasInjectedContentScript(tabId) {
   }
 }
 
+async function injectMainWorldScript(tabId, file) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [file],
+      world: 'MAIN',
+    });
+  } catch (e) {
+    await chrome.tabs.executeScript(tabId, { file });
+  }
+}
+
 async function injectTabScripts(tabId) {
-  await chrome.scripting.executeScript({
-    target: { tabId, allFrames: true },
-    files: INJECTABLE_FILES,
-  });
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: INJECTABLE_FILES,
+    });
+  } catch (e) {
+    for (const file of INJECTABLE_FILES) {
+      await chrome.tabs.executeScript(tabId, { file, allFrames: true });
+    }
+  }
 }
 
 async function prepareCurrentTabActivation(tabId, siteKey) {
@@ -82,23 +101,18 @@ async function prepareCurrentTabActivation(tabId, siteKey) {
 }
 
 async function getPendingSessionStates() {
-  const stored = await chrome.storage.session.get({ [PENDING_SESSION_KEY]: {} });
-  const pending = stored?.[PENDING_SESSION_KEY];
-  return pending && typeof pending === 'object' ? pending : {};
+  return Object.fromEntries(pendingSessionStates);
 }
 
 async function setPendingSessionState(tabId, value) {
   if (!tabId) return;
 
-  const pending = await getPendingSessionStates();
   const key = String(tabId);
   if (value) {
-    pending[key] = value;
+    pendingSessionStates.set(key, value);
   } else {
-    delete pending[key];
+    pendingSessionStates.delete(key);
   }
-
-  await chrome.storage.session.set({ [PENDING_SESSION_KEY]: pending });
 }
 
 async function tryApplyPendingSessionState(tabId, tab) {
@@ -316,13 +330,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       case 'INJECT_PAGE_HOOK': {
         const tabId = _sender?.tab?.id;
-        const frameId = _sender?.frameId ?? 0;
         if (!tabId) throw new Error('No tab ID for page hook injection.');
-        await chrome.scripting.executeScript({
-          target: { tabId, frameIds: [frameId] },
-          world: 'MAIN',
-          files: ['page-hook.js'],
-        });
+        await injectMainWorldScript(tabId, 'page-hook.js');
         return { ok: true };
       }
       case 'SOFT_RECHECK_DOCUMENT': {
@@ -346,7 +355,7 @@ chrome.runtime.onStartup.addListener(async () => {
     const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
     const siteSettings = migrateSiteSettings(stored.siteSettings, stored.activeSites);
     for (const [key, config] of Object.entries(siteSettings)) {
-      if (config.enabled) {
+      if (/** @type {Record<string, unknown>} */ (config).enabled) {
         await syncExistingTabsForSite(key);
       }
     }
@@ -354,3 +363,23 @@ chrome.runtime.onStartup.addListener(async () => {
     // ignore startup re-injection errors
   }
 });
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.siteToggles) {
+    const newToggles = changes.siteToggles.newValue || {};
+    const oldToggles = changes.siteToggles.oldValue || {};
+    for (const siteKey of Object.keys(newToggles)) {
+      if (newToggles[siteKey] !== oldToggles[siteKey]) {
+        chrome.tabs.query({}, (tabs) => {
+          tabs.forEach(tab => {
+            if (tab.url && tab.id && new URL(tab.url).hostname.toLowerCase() === siteKey.split(':')[0]) {
+              chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_CHANGED', siteKey, enabled: newToggles[siteKey] }).catch(() => {});
+            }
+          });
+        });
+      }
+    }
+  }
+});
+
+export {};

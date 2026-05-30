@@ -9,7 +9,12 @@
     "48": "audio/icon-48.png",
     "128": "audio/icon-128.png"
   },
-  "minimum_chrome_version": "116",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tab-audio-normalizer@yourdomain.com",
+      "strict_min_version": "128.0"
+    }
+  },
   "permissions": [
     "storage",
     "tabs",
@@ -34,7 +39,8 @@
     }
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["shared.js", "background.js"]
   },
   "action": {
     "default_icon": {

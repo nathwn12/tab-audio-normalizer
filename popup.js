@@ -1,18 +1,20 @@
-const resetBtnEl = document.getElementById('reset-btn');
-const toggle = document.getElementById('toggle');
-const remember = document.getElementById('remember');
-const blastGuardToggle = document.getElementById('blast-guard');
-const gainSlider = document.getElementById('gain-slider');
-const gainValueEl = document.getElementById('gain-value');
-const hostnameEl = document.getElementById('hostname');
-const statusDotEl = document.getElementById('status-dot');
-const statusTextEl = document.getElementById('status-text');
-const presetButtons = [...document.querySelectorAll('[data-preset]')];
+const resetBtnEl = /** @type {HTMLButtonElement} */ (document.getElementById('reset-btn'));
+const toggle = /** @type {HTMLInputElement} */ (document.getElementById('toggle'));
+const blastGuardToggle = /** @type {HTMLInputElement} */ (document.getElementById('blast-guard'));
+const gainSlider = /** @type {HTMLInputElement} */ (document.getElementById('gain-slider'));
+const gainValueEl = /** @type {HTMLElement} */ (document.getElementById('gain-value'));
+const hostnameEl = /** @type {HTMLElement} */ (document.getElementById('hostname'));
+const statusDotEl = /** @type {HTMLElement} */ (document.getElementById('status-dot'));
+const statusTextEl = /** @type {HTMLElement} */ (document.getElementById('status-text'));
+/** @type {NodeListOf<HTMLButtonElement>} */
+const presetButtons = document.querySelectorAll('[data-preset]');
 
 const {
   clampGainDb,
   extractHostname,
-  getSiteKey,
+  getExactHostKey,
+  loadSiteState,
+  saveSiteState,
   getPopupIndicator,
 } = globalThis.TabNormalizerShared;
 
@@ -39,10 +41,6 @@ void init();
 
 toggle.addEventListener('change', () => {
   void toggleSite();
-});
-
-remember.addEventListener('change', () => {
-  void handleRememberChange();
 });
 
 blastGuardToggle.addEventListener('change', () => {
@@ -89,7 +87,7 @@ async function init() {
 
     tabId = tab.id ?? null;
     hostname = extractHostname(tab.url);
-    siteKey = getSiteKey(hostname);
+    siteKey = getExactHostKey(tab.url);
     if (!hostname) {
       hostnameEl.textContent = 'Unsupported';
       disableAll('Not available on this page.');
@@ -104,22 +102,26 @@ async function init() {
 
     hostnameEl.textContent = siteKey || hostname;
 
-    const [state, settings] = await Promise.all([
-      chrome.runtime.sendMessage({ type: 'GET_SITE_STATE', siteKey }),
-      chrome.storage.local.get({ rememberEnabled: true }),
-    ]);
+    const savedToggle = await loadSiteState(siteKey);
+    const initialState = savedToggle !== null ? savedToggle : false;
 
-    toggle.checked = Boolean(state?.enabled);
+    const state = await chrome.runtime.sendMessage({ type: 'GET_SITE_STATE', hostname: siteKey });
+
+    toggle.checked = initialState;
     gainSlider.value = String(clampGainDb(state?.gainDb));
     blastGuardToggle.checked = Boolean(state?.blastGuard);
     renderGain(gainSlider.value);
-    remember.checked = Boolean(settings.rememberEnabled ?? true);
     toggle.disabled = false;
-    remember.disabled = false;
     syncGainControlState();
     syncBlastGuardControlState();
     syncPresetControlState();
-    await refreshDocumentStatus();
+
+    if (initialState) {
+      await refreshDocumentStatus();
+    } else {
+      renderStatus({ indicator: 'gray', text: 'Off for this site.' });
+    }
+
     statusTimer = setInterval(() => {
       void refreshDocumentStatus();
     }, 750);
@@ -131,36 +133,12 @@ async function init() {
 
 function disableAll(statusText) {
   toggle.disabled = true;
-  remember.disabled = true;
   blastGuardToggle.disabled = true;
   gainSlider.disabled = true;
   syncPresetControlState();
   renderStatus({ indicator: 'gray', text: statusText });
 }
 
-async function handleRememberChange() {
-  const rememberEnabled = remember.checked;
-  await chrome.storage.local.set({ rememberEnabled });
-
-  if (rememberEnabled && siteKey && tabId) {
-    try {
-      const res = await chrome.runtime.sendMessage({
-        type: 'SET_SITE_STATE',
-        siteKey,
-        tabId,
-        enabled: toggle.checked,
-        gainDb: clampGainDb(gainSlider.value),
-        blastGuard: blastGuardToggle.checked,
-      });
-      applyControlState({
-        enabled: res?.enabled,
-        gainDb: res?.gainDb,
-        blastGuard: res?.blastGuard,
-      });
-      await chrome.tabs.sendMessage(tabId, { type: 'CLEAR_SESSION_OVERRIDE' });
-    } catch {}
-  }
-}
 
 async function toggleSite() {
   if (!siteKey) {
@@ -184,10 +162,29 @@ async function toggleSite() {
   syncBlastGuardControlState();
 
   try {
-    if (remember.checked) {
-      await toggleSitePersistent();
+    await saveSiteState(siteKey, toggle.checked);
+
+    if (toggle.checked) {
+      runtimeActivationState = 'pending';
+      runtimeActivationMessage = 'Enabling on this tab…';
+      renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+      await chrome.runtime.sendMessage({
+        type: 'SET_SITE_STATE',
+        siteKey,
+        tabId,
+        enabled: toggle.checked,
+        gainDb: clampGainDb(gainSlider.value),
+        blastGuard: blastGuardToggle.checked,
+      });
     } else {
-      await toggleSiteSession();
+      if (tabId) {
+        await chrome.tabs.sendMessage(tabId, {
+          type: 'SET_DOCUMENT_STATE',
+          enabled: false,
+          gainDb: clampGainDb(gainSlider.value),
+          blastGuard: blastGuardToggle.checked,
+        }).catch(() => {});
+      }
     }
     await refreshDocumentStatus();
   } catch {
@@ -200,68 +197,7 @@ async function toggleSite() {
   }
 }
 
-async function toggleSitePersistent() {
-  if (toggle.checked) {
-    runtimeActivationState = 'pending';
-    runtimeActivationMessage = 'Enabling on this tab…';
-    renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
-  }
 
-  const res = await chrome.runtime.sendMessage({
-    type: 'SET_SITE_STATE',
-    siteKey,
-    tabId,
-    enabled: toggle.checked,
-    gainDb: clampGainDb(gainSlider.value),
-    blastGuard: blastGuardToggle.checked,
-  });
-
-  toggle.checked = Boolean(res?.enabled);
-  runtimeActivationState = String(res?.activation?.state || (toggle.checked ? 'pending' : 'idle'));
-  runtimeActivationMessage = String(res?.activation?.message || '');
-  gainSlider.value = String(clampGainDb(res?.gainDb));
-  blastGuardToggle.checked = Boolean(res?.blastGuard);
-  renderGain(gainSlider.value);
-  syncGainControlState();
-  syncBlastGuardControlState();
-}
-
-async function toggleSiteSession() {
-  if (!tabId) return;
-
-  if (toggle.checked) {
-    runtimeActivationState = 'pending';
-    runtimeActivationMessage = 'Enabling on this tab…';
-    renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
-  }
-
-  const res = await chrome.runtime.sendMessage({
-    type: 'SET_SITE_STATE',
-    siteKey,
-    tabId,
-    enabled: toggle.checked,
-    gainDb: clampGainDb(gainSlider.value),
-    blastGuard: blastGuardToggle.checked,
-    persist: false,
-  });
-
-  runtimeActivationState = String(res?.activation?.state || (toggle.checked ? 'pending' : 'idle'));
-  runtimeActivationMessage = String(res?.activation?.message || '');
-
-  try {
-    await chrome.tabs.sendMessage(tabId, {
-      type: 'SET_DOCUMENT_STATE',
-      enabled: toggle.checked,
-      gainDb: clampGainDb(gainSlider.value),
-      blastGuard: blastGuardToggle.checked,
-    });
-  } catch {
-    // Content script may be unreachable on restricted pages.
-  }
-
-  syncGainControlState();
-  syncBlastGuardControlState();
-}
 
 function queueGainSave(gainDb) {
   if (!siteKey || !toggle.checked || gainSlider.disabled) return;
@@ -275,33 +211,24 @@ function queueGainSave(gainDb) {
 async function saveGain(gainDb) {
   if (!toggle.checked) return;
   try {
-    if (remember.checked) {
-      const res = await chrome.runtime.sendMessage({
-        type: 'SET_SITE_STATE',
-        siteKey,
-        gainDb,
-        blastGuard: blastGuardToggle.checked,
-      });
-      const nextGain = clampGainDb(res?.gainDb);
-      gainSlider.value = String(nextGain);
-      blastGuardToggle.checked = Boolean(res?.blastGuard);
-      renderGain(nextGain);
-    } else if (tabId) {
-      await chrome.runtime.sendMessage({
-        type: 'SET_SITE_STATE',
-        siteKey,
-        tabId,
-        enabled: toggle.checked,
-        gainDb,
-        blastGuard: blastGuardToggle.checked,
-        persist: false,
-      });
+    const res = await chrome.runtime.sendMessage({
+      type: 'SET_SITE_STATE',
+      siteKey,
+      tabId,
+      gainDb,
+      blastGuard: blastGuardToggle.checked,
+    });
+    const nextGain = clampGainDb(res?.gainDb);
+    gainSlider.value = String(nextGain);
+    blastGuardToggle.checked = Boolean(res?.blastGuard);
+    renderGain(nextGain);
+    if (tabId) {
       await chrome.tabs.sendMessage(tabId, {
         type: 'SET_DOCUMENT_STATE',
         enabled: toggle.checked,
-        gainDb,
+        gainDb: nextGain,
         blastGuard: blastGuardToggle.checked,
-      });
+      }).catch(() => {});
     }
   } catch {}
 }
@@ -309,30 +236,22 @@ async function saveGain(gainDb) {
 async function saveBlastGuard(blastGuard) {
   if (!toggle.checked || blastGuardToggle.disabled) return;
   try {
-    if (remember.checked) {
-      const res = await chrome.runtime.sendMessage({
-        type: 'SET_SITE_STATE',
-        siteKey,
-        blastGuard,
-        gainDb: clampGainDb(gainSlider.value),
-      });
-      blastGuardToggle.checked = Boolean(res?.blastGuard);
-    } else if (tabId) {
-      await chrome.runtime.sendMessage({
-        type: 'SET_SITE_STATE',
-        siteKey,
-        tabId,
-        enabled: toggle.checked,
-        gainDb: clampGainDb(gainSlider.value),
-        blastGuard,
-        persist: false,
-      });
+    const res = await chrome.runtime.sendMessage({
+      type: 'SET_SITE_STATE',
+      siteKey,
+      tabId,
+      blastGuard,
+      gainDb: clampGainDb(gainSlider.value),
+    });
+    blastGuardToggle.checked = Boolean(res?.blastGuard);
+    if (tabId) {
+      const gainDb = clampGainDb(gainSlider.value);
       await chrome.tabs.sendMessage(tabId, {
         type: 'SET_DOCUMENT_STATE',
         enabled: toggle.checked,
-        gainDb: clampGainDb(gainSlider.value),
-        blastGuard,
-      });
+        gainDb,
+        blastGuard: Boolean(res?.blastGuard),
+      }).catch(() => {});
     }
   } catch {}
 }
@@ -404,13 +323,11 @@ async function refreshDocumentStatus() {
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
-    if (!remember.checked) {
-      applyControlState({
-        enabled,
-        gainDb: doc?.gainDb,
-        blastGuard: doc?.blastGuard,
-      });
-    }
+    applyControlState({
+      enabled,
+      gainDb: doc?.gainDb,
+      blastGuard: doc?.blastGuard,
+    });
 
     if (hookActive) {
       hookWasActiveAt = Date.now();
@@ -520,3 +437,5 @@ window.addEventListener('unload', () => {
   if (statusTimer) clearInterval(statusTimer);
   if (saveGainTimer) clearTimeout(saveGainTimer);
 });
+
+export {};
