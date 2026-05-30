@@ -25,6 +25,20 @@
     getPopupIndicator,
   } = globalThis.TabNormalizerShared;
 
+  /** @type {{
+   *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
+   *   blastGuard: boolean, injected: boolean, hookAlive: boolean,
+   *   hookActive: boolean, injecting: boolean, injectStartedAt: number,
+   *   lastError: string, lastStatusAt: number,
+   *   pendingProbe: ({ requestId: string, promise: Promise<boolean>, resolve: (v: boolean) => void, timeoutId: number } | null),
+   *   popupProbe: (Promise<boolean> | null),
+   *   syncInFlight: boolean, queuedSyncReason: string,
+   *   queuedSyncPayload: (Record<string, unknown> | null),
+   *   bootstrapped: boolean, activationRetryTimer: (number | null),
+   *   activationRetryCount: number, spaWatchTimer: (number | null),
+   *   hasSessionOverride: boolean, sessionEnabled: boolean,
+   *   sessionGainDb: number, sessionBlastGuard: boolean
+   * }} */
   const state = {
     hostname: '',
     siteKey: '',
@@ -105,6 +119,15 @@
         sendResponse({ ok: true });
         return true;
       }
+      if (message?.type === 'TOGGLE_CHANGED') {
+        if (message.enabled) {
+          void handleSetDocumentState(message);
+        } else {
+          cleanupAndReset();
+        }
+        sendResponse({ ok: true });
+        return true;
+      }
       return false;
     });
 
@@ -160,6 +183,10 @@
     return state.enabled && (state.injecting || state.syncInFlight || Boolean(state.pendingProbe));
   }
 
+  /**
+   * @param {string} reason
+   * @param {Record<string, unknown>|null} [payload]
+   */
   function scheduleSync(reason, payload = null) {
     if (state.syncInFlight) {
       state.queuedSyncReason = reason;
@@ -219,6 +246,17 @@
     return { ok: true };
   }
 
+  function cleanupAndReset() {
+    state.hasSessionOverride = false;
+    clearPendingStart();
+    clearActivationRetry();
+    stopSpaWatch();
+    postToPage('STOP', { reason: 'toggle-changed' });
+    state.hookActive = false;
+    state.hookAlive = false;
+    state.lastError = '';
+  }
+
   async function handleSoftRecheckDocument() {
     const { enabled } = await getEffectiveDocumentState();
     if (!enabled) {
@@ -229,6 +267,10 @@
     return getDocumentStatus();
   }
 
+  /**
+   * @param {string} reason
+   * @param {Record<string, unknown>|null} [payload]
+   */
   async function sync(reason, payload = null) {
     refreshLocationState();
     if (!state.siteKey) {
@@ -354,22 +396,24 @@
     const workletUrl = chrome.runtime.getURL('audio/normalizer-worklet.js');
     document.documentElement?.setAttribute('data-tn-worklet-url', workletUrl);
 
-    chrome.runtime.sendMessage({ type: 'INJECT_PAGE_HOOK' }, (response) => {
-      state.injecting = false;
-      if (chrome.runtime.lastError || !response?.ok) {
-        console.error('[cs] page-hook injection failed:', chrome.runtime.lastError?.message || response?.error || 'unknown');
-        state.injected = false;
-        state.lastError = 'Failed to inject page hook.';
-        return;
-      }
-      console.log('[cs] page-hook.js injected via background');
-      if (state.enabled) {
-        postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb, blastGuard: state.blastGuard });
-        postToPage('SET_GAIN', { gainDb: state.gainDb });
-        postToPage('SET_BLAST_GUARD', { blastGuard: state.blastGuard });
-        scheduleActivationRetry('inject-onload');
-      }
-    });
+    chrome.runtime.sendMessage({ type: 'INJECT_PAGE_HOOK' })
+      .then((response) => {
+        state.injecting = false;
+        if (!response?.ok) {
+          console.error('[cs] page-hook injection failed:', response?.error || 'unknown');
+          state.injected = false;
+          state.lastError = 'Failed to inject page hook.';
+          return;
+        }
+        console.log('[cs] page-hook.js injected via background');
+        if (state.enabled) {
+          postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb, blastGuard: state.blastGuard });
+          postToPage('SET_GAIN', { gainDb: state.gainDb });
+          postToPage('SET_BLAST_GUARD', { blastGuard: state.blastGuard });
+          scheduleActivationRetry('inject-onload');
+        }
+      })
+      .catch(() => {});
   }
 
   function handleHookMessage(data) {
@@ -425,7 +469,8 @@
       clearTimeout(state.pendingProbe.timeoutId);
     }
 
-    let resolvePending = null;
+    /** @type {(v: boolean) => void} */
+    let resolvePending = () => {};
     const pendingPromise = new Promise((resolve) => {
       resolvePending = resolve;
     });

@@ -11,7 +11,7 @@
   const WORKLET_URL = document.documentElement?.getAttribute('data-tn-worklet-url')
     || new URL(
       'audio/normalizer-worklet.js',
-      document.currentScript?.src || location.href,
+      /** @type {HTMLScriptElement|null} */ (document.currentScript)?.src || location.href,
     ).toString();
   document.documentElement?.removeAttribute('data-tn-worklet-url');
   const MIN_GAIN_DB = -12;
@@ -30,6 +30,7 @@
   let recoveryBurstTimer = null;
   let recoveryBurstRemaining = 0;
 
+  /** @type {{ active: boolean, observer: (MutationObserver|null), recovering: boolean, internalWiring: boolean, creatingContext: boolean, gainDb: number, blastGuard: boolean, lastError: string }} */
   const state = {
     active: false,
     observer: null,
@@ -86,6 +87,9 @@
     }, 200);
   }
 
+  /**
+   * @param {{ gainDb?: number, blastGuard?: boolean }|null} [nextState]
+   */
   function start(nextState = null) {
     const wasActive = state.active;
     if (nextState && typeof nextState === 'object') {
@@ -159,43 +163,46 @@
     observeDom();
 
     try {
-      const OrigAC = window.AudioContext;
+      const OrigAC = /** @type {typeof AudioContext & {__tnPatched?: boolean}} */ (window.AudioContext);
       if (OrigAC && !OrigAC.__tnPatched) {
-        class Patched extends OrigAC {
+        class PatchedAudioContext extends OrigAC {
           constructor(...args) {
             super(...args);
             if (state.creatingContext || this.state === 'closed') return;
             try { ensureContextSession(this); } catch {}
           }
         }
-        Patched.__tnPatched = true;
-        window.AudioContext = Patched;
+        PatchedAudioContext.__tnPatched = true;
+        window.AudioContext = /** @type {typeof AudioContext & {__tnPatched?: boolean}} */ (PatchedAudioContext);
       }
 
-      const OrigOAC = window.OfflineAudioContext;
+      const OrigOAC = /** @type {typeof OfflineAudioContext & {__tnPatched?: boolean}} */ (window.OfflineAudioContext);
       if (OrigOAC && !OrigOAC.__tnPatched) {
-        class Patched extends OrigOAC {
+        const Parent = /** @type {{ new (...a: any[]): OfflineAudioContext & {__tnPatched?: boolean} }} */ (OrigOAC);
+        class PatchedOfflineAudioContext extends Parent {
           constructor(...args) {
             super(...args);
             if (state.creatingContext) return;
             try { ensureContextSession(this); } catch {}
           }
         }
-        Patched.__tnPatched = true;
-        window.OfflineAudioContext = Patched;
+        PatchedOfflineAudioContext.__tnPatched = true;
+        window.OfflineAudioContext = /** @type {typeof OfflineAudioContext & {__tnPatched?: boolean}} */ (PatchedOfflineAudioContext);
       }
 
-      if (window.webkitAudioContext && !window.webkitAudioContext.__tnPatched) {
-        const Orig = window.webkitAudioContext;
-        class Patched extends Orig {
-          constructor(...args) {
-            super(...args);
-            if (state.creatingContext || this.state === 'closed') return;
-            try { ensureContextSession(this); } catch {}
+      if (window.webkitAudioContext) {
+        const Orig = /** @type {typeof AudioContext & {__tnPatched?: boolean}} */ (window.webkitAudioContext);
+        if (!Orig.__tnPatched) {
+          class PatchedWebkitAudioContext extends Orig {
+            constructor(...args) {
+              super(...args);
+              if (state.creatingContext || this.state === 'closed') return;
+              try { ensureContextSession(this); } catch {}
+            }
           }
+          PatchedWebkitAudioContext.__tnPatched = true;
+          window.webkitAudioContext = /** @type {typeof AudioContext & {__tnPatched?: boolean}} */ (PatchedWebkitAudioContext);
         }
-        Patched.__tnPatched = true;
-        window.webkitAudioContext = Patched;
       }
     } catch {}
 
@@ -351,6 +358,7 @@
   }
 
   async function createMediaSession() {
+    /** @type {AudioContext|undefined} */
     let context;
     state.creatingContext = true;
     try {
@@ -361,6 +369,8 @@
     } finally {
       state.creatingContext = false;
     }
+
+    if (!context) return /** @type {*} */ (null);
 
     console.log('[hook] AudioContext created, state:', context.state, 'sampleRate:', context.sampleRate);
 

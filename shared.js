@@ -5,20 +5,8 @@
     module.exports = api;
   }
 
-  root.TabNormalizerShared = api;
+  /** @type {Record<string, unknown>} */ (root).TabNormalizerShared = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const MULTIPART_PUBLIC_SUFFIXES = new Set([
-    'ac.uk',
-    'co.jp',
-    'co.uk',
-    'com.au',
-    'com.br',
-    'com.mx',
-    'com.tr',
-    'net.au',
-    'org.au',
-    'org.uk',
-  ]);
   const DEFAULT_GAIN_DB = 0;
   const DEFAULT_BLAST_GUARD = false;
   const MIN_GAIN_DB = -12;
@@ -34,6 +22,10 @@
   }
 
   function getSiteKey(hostname) {
+    return String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
+  }
+
+  function getLegacySiteKey(hostname) {
     let normalized = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
     if (!normalized) return '';
 
@@ -54,8 +46,10 @@
     }
 
     const suffix = parts.slice(-2).join('.');
-    if (MULTIPART_PUBLIC_SUFFIXES.has(suffix) && parts.length >= 3) {
-      return parts.slice(-3).join('.');
+    if (suffix === 'co.uk' || suffix === 'co.jp' || suffix === 'com.au' || suffix === 'com.br' || suffix === 'com.mx' || suffix === 'com.tr' || suffix === 'net.au' || suffix === 'org.au' || suffix === 'org.uk' || suffix === 'ac.uk') {
+      if (parts.length >= 3) {
+        return parts.slice(-3).join('.');
+      }
     }
 
     return parts.slice(-2).join('.');
@@ -67,7 +61,7 @@
     for (const [rawKey, enabled] of Object.entries(activeSites || {})) {
       if (!enabled) continue;
 
-      const siteKey = getSiteKey(rawKey);
+      const siteKey = getLegacySiteKey(rawKey);
       if (!siteKey) continue;
       next[siteKey] = true;
     }
@@ -189,12 +183,77 @@
     return 'gray';
   }
 
+  // --- Firefox port: exact-host site key (no subdomain collapsing) ---
+
+  function getExactHostKey(url) {
+    try {
+      const u = new URL(url);
+      let key = u.hostname.toLowerCase();
+      if (u.port && u.port !== '80' && u.port !== '443') {
+        key += ':' + u.port;
+      }
+      return key;
+    } catch {
+      return '';
+    }
+  }
+
+  function storageGet(keys) {
+    return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+  }
+
+  function storageSet(items) {
+    return chrome.storage.local.set(items);
+  }
+
+  async function loadSiteState(siteKey) {
+    const result = await storageGet('siteToggles');
+    const toggles = /** @type {Record<string, boolean>} */ (result.siteToggles || {});
+    return siteKey in toggles ? toggles[siteKey] : null;
+  }
+
+  async function saveSiteState(siteKey, enabled) {
+    const result = await storageGet('siteToggles');
+    const toggles = /** @type {Record<string, boolean>} */ (result.siteToggles || {});
+    toggles[siteKey] = enabled;
+    await storageSet({ siteToggles: toggles });
+  }
+
+  async function migrateLegacyState(siteKey) {
+    const result = /** @type {Record<string, unknown>} */ (await storageGet(['activeSites', 'siteSettings']));
+    let migrated = false;
+    if (result.siteSettings && result.siteSettings[siteKey]) {
+      const existing = await loadSiteState(siteKey);
+      if (existing === null) {
+        await saveSiteState(siteKey, result.siteSettings[siteKey].enabled);
+        migrated = true;
+      }
+    }
+    if (!migrated && result.activeSites && siteKey in /** @type {Record<string, boolean>} */ (result.activeSites)) {
+      const existing = await loadSiteState(siteKey);
+      if (existing === null) {
+        await saveSiteState(siteKey, result.activeSites[siteKey]);
+        migrated = true;
+      }
+    }
+    return migrated;
+  }
+
+  function onStorageChanged(callback) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes.siteToggles) {
+        callback(changes.siteToggles.newValue || {});
+      }
+    });
+  }
+
   return {
     DEFAULT_GAIN_DB,
     DEFAULT_BLAST_GUARD,
     clampGainDb,
     extractHostname,
     getSiteKey,
+    getLegacySiteKey,
     migrateActiveSites,
     migrateSiteSettings,
     getSiteConfig,
@@ -202,5 +261,12 @@
     setSiteEnabled,
     getContentAction,
     getPopupIndicator,
+    getExactHostKey,
+    storageGet,
+    storageSet,
+    loadSiteState,
+    saveSiteState,
+    migrateLegacyState,
+    onStorageChanged,
   };
 });
