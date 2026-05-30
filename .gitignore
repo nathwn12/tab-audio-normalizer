@@ -8,6 +8,12 @@
 tests/
 qa/
 
+# Dependencies
+node_modules/
+
+# Extension builds
+*.xpi
+
 # OS cruft
 .DS_Store
 Thumbs.db
