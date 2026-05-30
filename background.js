@@ -12,7 +12,6 @@ const INJECTABLE_FILES = ['shared.js', 'content-script.js'];
 const SUPPORTED_PROTOCOL_PATTERN = /^https?:$/i;
 const RESTRICTED_URL_PATTERN = /^(chrome|chrome-extension|devtools|edge|about|moz-extension):/i;
 const WEBSTORE_URL_PATTERN = /^https?:\/\/(chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)\b/i;
-const PENDING_SESSION_KEY = 'pendingSessionStates';
 const pendingSessionStates = new Map();
 
 function canAccessTabUrl(url) {
