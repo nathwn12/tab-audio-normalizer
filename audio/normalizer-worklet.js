@@ -22,9 +22,9 @@ const BLAST_GUARD_LOCAL_MAX_CUT_DB = 8.5;
 const BLAST_GUARD_LOCAL_DEADBAND_DB = 1.5;
 const BLAST_GUARD_SURGE_DB = 6;
 const BLAST_GUARD_SURGE_MAX_CUT_DB = 5;
-const DOWN_TIME_SECONDS = 0.08;
+const DOWN_TIME_SECONDS = 0.02;
 const BLAST_GUARD_DOWN_TIME_SECONDS = 0.025;
-const UP_TIME_SECONDS = 2.9;
+const UP_TIME_SECONDS = 0.25;
 const MOMENTARY_TAU = 0.365;
 const SHORT_TAU = 2.9;
 const PROGRAM_TAU = 13;
@@ -42,12 +42,7 @@ const SOFT_KNEE_DB = 3;
 const ABSOLUTE_GATE_DB = -50;
 const RELATIVE_GATE_OFFSET_DB = 10;
 const GATE_PEAK = 0.01;
-const MIN_ANALYSIS_SECONDS = 0.35;
-const STARTUP_ASSIST_SECONDS = 0.75;
-const STARTUP_MAX_BOOST_DB = 3;
-const STARTUP_MAX_CUT_DB = 4;
-const BLAST_GUARD_STARTUP_MAX_BOOST_DB = 1;
-const BLAST_GUARD_STARTUP_MAX_CUT_DB = 6;
+const MIN_ANALYSIS_SECONDS = 0.05;
 
 class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -61,8 +56,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.hopPeak = 0;
     this.peakFollower = 0;
     this.analysisFrames = 0;
-    this.startupAssistFrames = Math.max(1, Math.round(sampleRate * STARTUP_ASSIST_SECONDS));
-    this.startupFramesRemaining = this.startupAssistFrames;
 
     // Three-window loudness from V3.5
     this.momentarySq = 0;
@@ -106,7 +99,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       }
 
       if (event.data?.type === 'start-normalizing') {
-        this.startupFramesRemaining = this.startupAssistFrames;
+        return;
       }
     };
   }
@@ -162,8 +155,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       targetGain = this.computeTargetGain(momentaryDb, shortDb, programDb, blockPeak);
     }
 
-    const startupGain = this.computeStartupAssist(momentaryDb, shortDb, programDb, blockPeak, quietBlock, frameCount);
-
     // Smooth gain changes
     const transitionSeconds = targetGain < this.currentGain
       ? (this.blastGuard ? BLAST_GUARD_DOWN_TIME_SECONDS : DOWN_TIME_SECONDS)
@@ -192,7 +183,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
       const loudnessGain = Math.exp(startLog + gainStep * i);
       processLimiterGain = this.stepLimiter(this.limiterTargets[readIndex]);
-      const totalGain = loudnessGain * startupGain * this.userGainLinear * processLimiterGain;
+      const totalGain = loudnessGain * this.userGainLinear * processLimiterGain;
 
       for (let ch = 0; ch < outCh; ch++) {
         const ic = input[ch] ?? input[0];
@@ -306,37 +297,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     }
 
     return targetGain;
-  }
-
-  computeStartupAssist(momentaryDb, shortDb, programDb, blockPeak, quietBlock, frameCount) {
-    if (this.startupFramesRemaining <= 0 || quietBlock) {
-      this.startupFramesRemaining = Math.max(0, this.startupFramesRemaining - frameCount);
-      return 1;
-    }
-
-    const comfortMinDb = lufsToInternalDb(COMFORT_MIN_LUFS);
-    const comfortMaxDb = lufsToInternalDb(COMFORT_MAX_LUFS);
-    const maxStartupBoostDb = this.blastGuard ? BLAST_GUARD_STARTUP_MAX_BOOST_DB : STARTUP_MAX_BOOST_DB;
-    const maxStartupCutDb = this.blastGuard ? BLAST_GUARD_STARTUP_MAX_CUT_DB : STARTUP_MAX_CUT_DB;
-    const loudDb = Math.max(momentaryDb, shortDb);
-    let assistDb = 0;
-
-    if (shortDb < comfortMinDb) {
-      assistDb = Math.min(comfortMinDb - shortDb, maxStartupBoostDb);
-    } else if (loudDb > comfortMaxDb) {
-      assistDb = -Math.min(loudDb - comfortMaxDb, maxStartupCutDb);
-    }
-
-    const fade = this.startupFramesRemaining / this.startupAssistFrames;
-    this.startupFramesRemaining = Math.max(0, this.startupFramesRemaining - frameCount);
-
-    if (assistDb === 0) return 1;
-
-    let assistGain = dbToGain(assistDb * fade);
-    if (assistGain > 1 && blockPeak > 0) {
-      assistGain = Math.min(assistGain, this.getCeilingLinear() / blockPeak);
-    }
-    return Math.max(0.25, Math.min(4, assistGain));
   }
 
   calcLimiterTarget(peak) {

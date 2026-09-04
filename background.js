@@ -1,16 +1,10 @@
-try { importScripts('shared.js'); } catch {} // Firefox uses background.scripts instead
+importScripts('shared.js');
 
-const {
-  extractHostname,
-  getSiteKey,
-  getSiteConfig,
-  migrateSiteSettings,
-  setSiteConfig,
-} = self.TabNormalizerShared;
+const backgroundShared = self.TabNormalizerShared;
 
 const INJECTABLE_FILES = ['shared.js', 'content-script.js'];
 const SUPPORTED_PROTOCOL_PATTERN = /^https?:$/i;
-const RESTRICTED_URL_PATTERN = /^(chrome|chrome-extension|devtools|edge|about|moz-extension):/i;
+const RESTRICTED_URL_PATTERN = /^(chrome|chrome-extension|devtools|edge|about):/i;
 const WEBSTORE_URL_PATTERN = /^https?:\/\/(chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)\b/i;
 const pendingSessionStates = new Map();
 
@@ -31,7 +25,7 @@ function getTabSiteKey(tab) {
     return '';
   }
 
-  return getSiteKey(extractHostname(tab.url));
+  return backgroundShared.getSiteKey(backgroundShared.extractHostname(tab.url));
 }
 
 async function hasInjectedContentScript(tabId) {
@@ -44,28 +38,18 @@ async function hasInjectedContentScript(tabId) {
 }
 
 async function injectMainWorldScript(tabId, file) {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: [file],
-      world: 'MAIN',
-    });
-  } catch (e) {
-    await chrome.tabs.executeScript(tabId, { file });
-  }
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [file],
+    world: 'MAIN',
+  });
 }
 
 async function injectTabScripts(tabId) {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      files: INJECTABLE_FILES,
-    });
-  } catch (e) {
-    for (const file of INJECTABLE_FILES) {
-      await chrome.tabs.executeScript(tabId, { file, allFrames: true });
-    }
-  }
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    files: INJECTABLE_FILES,
+  });
 }
 
 async function prepareCurrentTabActivation(tabId, siteKey) {
@@ -232,10 +216,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (!hostname) throw new Error('Missing hostname.');
 
         const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
-        const siteKey = getSiteKey(hostname);
-        const current = getSiteConfig(stored.siteSettings, stored.activeSites, siteKey);
+        const siteKey = backgroundShared.getSiteKey(hostname);
+        const current = backgroundShared.getSiteConfig(stored.siteSettings, stored.activeSites, siteKey);
         const nextEnabled = !current.enabled;
-        const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, { enabled: nextEnabled });
+        const siteSettings = backgroundShared.setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, { enabled: nextEnabled });
 
         await chrome.storage.local.set({ activeSites: {}, siteSettings });
         if (nextEnabled) {
@@ -255,8 +239,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (!hostname) throw new Error('Missing hostname.');
 
         const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
-        const siteKey = getSiteKey(hostname);
-        const current = getSiteConfig(stored.siteSettings, stored.activeSites, siteKey);
+        const siteKey = backgroundShared.getSiteKey(hostname);
+        const current = backgroundShared.getSiteConfig(stored.siteSettings, stored.activeSites, siteKey);
         const requestedEnabledChange = Object.prototype.hasOwnProperty.call(message, 'enabled');
         const enabled = Object.prototype.hasOwnProperty.call(message, 'enabled')
           ? Boolean(message.enabled)
@@ -267,7 +251,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const blastGuard = Object.prototype.hasOwnProperty.call(message, 'blastGuard')
           ? Boolean(message.blastGuard)
           : current.blastGuard;
-        const siteSettings = setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, {
+        const siteSettings = backgroundShared.setSiteConfig(stored.siteSettings, stored.activeSites, siteKey, {
           enabled,
           gainDb,
           blastGuard,
@@ -283,7 +267,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ? await prepareCurrentTabActivation(message.tabId, siteKey)
           : { state: 'idle' };
         if (!persist && message.tabId) {
-          const nextConfig = getSiteConfig(siteSettings, {}, siteKey);
+          const nextConfig = backgroundShared.getSiteConfig(siteSettings, {}, siteKey);
           await setPendingSessionState(
             message.tabId,
             {
@@ -301,8 +285,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return {
           ok: true,
           enabled,
-          gainDb: getSiteConfig(siteSettings, {}, siteKey).gainDb,
-          blastGuard: getSiteConfig(siteSettings, {}, siteKey).blastGuard,
+          gainDb: backgroundShared.getSiteConfig(siteSettings, {}, siteKey).gainDb,
+          blastGuard: backgroundShared.getSiteConfig(siteSettings, {}, siteKey).blastGuard,
           siteKey,
           activation,
         };
@@ -312,8 +296,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (!hostname) return { ok: true, enabled: false, gainDb: 0, blastGuard: false };
 
         const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
-        const config = getSiteConfig(stored.siteSettings, stored.activeSites, hostname);
-        const siteSettings = migrateSiteSettings(stored.siteSettings, stored.activeSites);
+        const config = backgroundShared.getSiteConfig(stored.siteSettings, stored.activeSites, hostname);
+        const siteSettings = backgroundShared.migrateSiteSettings(stored.siteSettings, stored.activeSites);
         const shouldPersistMigration = Object.keys(stored.activeSites || {}).length > 0 ||
           JSON.stringify(siteSettings) !== JSON.stringify(stored.siteSettings || {});
         if (shouldPersistMigration) {
@@ -352,7 +336,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.runtime.onStartup.addListener(async () => {
   try {
     const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
-    const siteSettings = migrateSiteSettings(stored.siteSettings, stored.activeSites);
+    const siteSettings = backgroundShared.migrateSiteSettings(stored.siteSettings, stored.activeSites);
     for (const [key, config] of Object.entries(siteSettings)) {
       if (/** @type {Record<string, unknown>} */ (config).enabled) {
         await syncExistingTabsForSite(key);
@@ -380,5 +364,3 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
   }
 });
-
-export {};
