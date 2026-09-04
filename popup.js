@@ -9,14 +9,7 @@ const statusTextEl = /** @type {HTMLElement} */ (document.getElementById('status
 /** @type {NodeListOf<HTMLButtonElement>} */
 const presetButtons = document.querySelectorAll('[data-preset]');
 
-const {
-  clampGainDb,
-  extractHostname,
-  getExactHostKey,
-  loadSiteState,
-  saveSiteState,
-  getPopupIndicator,
-} = globalThis.TabNormalizerShared;
+const popupShared = globalThis.TabNormalizerShared;
 
 const PRESETS = {
   speech: -3,
@@ -49,7 +42,7 @@ blastGuardToggle.addEventListener('change', () => {
 
 gainSlider.addEventListener('input', () => {
   if (gainSlider.disabled) return;
-  const gainDb = clampGainDb(gainSlider.value);
+  const gainDb = popupShared.clampGainDb(gainSlider.value);
   gainSlider.value = String(gainDb);
   renderGain(gainDb);
   queueGainSave(gainDb);
@@ -86,8 +79,8 @@ async function init() {
     }
 
     tabId = tab.id ?? null;
-    hostname = extractHostname(tab.url);
-    siteKey = getExactHostKey(tab.url);
+    hostname = popupShared.extractHostname(tab.url);
+    siteKey = popupShared.getSiteKey(hostname);
     if (!hostname) {
       hostnameEl.textContent = 'Unsupported';
       disableAll('Not available on this page.');
@@ -100,15 +93,15 @@ async function init() {
       return;
     }
 
-    hostnameEl.textContent = siteKey || hostname;
+    hostnameEl.textContent = hostname;
 
-    const savedToggle = await loadSiteState(siteKey);
+    const savedToggle = await popupShared.loadSiteState(siteKey);
     const initialState = savedToggle !== null ? savedToggle : false;
 
     const state = await chrome.runtime.sendMessage({ type: 'GET_SITE_STATE', hostname: siteKey });
 
     toggle.checked = initialState;
-    gainSlider.value = String(clampGainDb(state?.gainDb));
+    gainSlider.value = String(popupShared.clampGainDb(state?.gainDb));
     blastGuardToggle.checked = Boolean(state?.blastGuard);
     renderGain(gainSlider.value);
     toggle.disabled = false;
@@ -162,7 +155,7 @@ async function toggleSite() {
   syncBlastGuardControlState();
 
   try {
-    await saveSiteState(siteKey, toggle.checked);
+    await popupShared.saveSiteState(siteKey, toggle.checked);
 
     if (toggle.checked) {
       runtimeActivationState = 'pending';
@@ -173,7 +166,7 @@ async function toggleSite() {
         siteKey,
         tabId,
         enabled: toggle.checked,
-        gainDb: clampGainDb(gainSlider.value),
+        gainDb: popupShared.clampGainDb(gainSlider.value),
         blastGuard: blastGuardToggle.checked,
       });
     } else {
@@ -181,7 +174,7 @@ async function toggleSite() {
         await chrome.tabs.sendMessage(tabId, {
           type: 'SET_DOCUMENT_STATE',
           enabled: false,
-          gainDb: clampGainDb(gainSlider.value),
+          gainDb: popupShared.clampGainDb(gainSlider.value),
           blastGuard: blastGuardToggle.checked,
         }).catch(() => {});
       }
@@ -218,7 +211,7 @@ async function saveGain(gainDb) {
       gainDb,
       blastGuard: blastGuardToggle.checked,
     });
-    const nextGain = clampGainDb(res?.gainDb);
+    const nextGain = popupShared.clampGainDb(res?.gainDb);
     gainSlider.value = String(nextGain);
     blastGuardToggle.checked = Boolean(res?.blastGuard);
     renderGain(nextGain);
@@ -241,11 +234,11 @@ async function saveBlastGuard(blastGuard) {
       siteKey,
       tabId,
       blastGuard,
-      gainDb: clampGainDb(gainSlider.value),
+      gainDb: popupShared.clampGainDb(gainSlider.value),
     });
     blastGuardToggle.checked = Boolean(res?.blastGuard);
     if (tabId) {
-      const gainDb = clampGainDb(gainSlider.value);
+      const gainDb = popupShared.clampGainDb(gainSlider.value);
       await chrome.tabs.sendMessage(tabId, {
         type: 'SET_DOCUMENT_STATE',
         enabled: toggle.checked,
@@ -288,7 +281,7 @@ async function requestSliderSoftWake() {
 function applyPreset(gainDb) {
   if (gainSlider.disabled) return;
 
-  const nextGain = clampGainDb(gainDb);
+  const nextGain = popupShared.clampGainDb(gainDb);
   gainSlider.value = String(nextGain);
   renderGain(nextGain);
   queueGainSave(nextGain);
@@ -302,7 +295,7 @@ async function refreshDocumentStatus() {
     return;
   }
 
-  const fallbackIndicator = getPopupIndicator({
+  const fallbackIndicator = popupShared.getPopupIndicator({
     enabled: toggle.checked,
     hookAlive: false,
     hookActive: false,
@@ -336,7 +329,7 @@ async function refreshDocumentStatus() {
 
     const recentlyActive = hookActive || (lastHookActive && enabled && hookAlive && (Date.now() - hookWasActiveAt) < ACTIVE_STALE_MS);
 
-    const nextIndicator = getPopupIndicator({
+    const nextIndicator = popupShared.getPopupIndicator({
       enabled,
       hookAlive,
       hookActive: recentlyActive,
@@ -403,14 +396,14 @@ function renderStatus({ indicator, text }) {
 }
 
 function renderGain(gainDb) {
-  const numeric = clampGainDb(gainDb);
+  const numeric = popupShared.clampGainDb(gainDb);
   const prefix = numeric > 0 ? '+' : '';
   gainValueEl.textContent = `${prefix}${numeric.toFixed(1)} dB`;
 }
 
 function applyControlState({ enabled, gainDb, blastGuard }) {
   toggle.checked = Boolean(enabled);
-  gainSlider.value = String(clampGainDb(gainDb));
+  gainSlider.value = String(popupShared.clampGainDb(gainDb));
   blastGuardToggle.checked = Boolean(blastGuard);
   renderGain(gainSlider.value);
   syncGainControlState();
@@ -437,5 +430,3 @@ window.addEventListener('unload', () => {
   if (statusTimer) clearInterval(statusTimer);
   if (saveGainTimer) clearTimeout(saveGainTimer);
 });
-
-export {};
