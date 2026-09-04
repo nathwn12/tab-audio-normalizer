@@ -13,17 +13,7 @@
   const ACTIVATE_RETRY_MS = 250;
   const PENDING_ATTR = 'data-tab-normalizer-pending';
 
-  const {
-    DEFAULT_BLAST_GUARD,
-    DEFAULT_GAIN_DB,
-    clampGainDb,
-    extractHostname,
-    getSiteKey,
-    getSiteConfig,
-    migrateSiteSettings,
-    getContentAction,
-    getPopupIndicator,
-  } = globalThis.TabNormalizerShared;
+  const contentShared = globalThis.TabNormalizerShared;
 
   /** @type {{
    *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
@@ -43,8 +33,8 @@
     hostname: '',
     siteKey: '',
     enabled: false,
-    gainDb: DEFAULT_GAIN_DB,
-    blastGuard: DEFAULT_BLAST_GUARD,
+    gainDb: contentShared.DEFAULT_GAIN_DB,
+    blastGuard: contentShared.DEFAULT_BLAST_GUARD,
     injected: false,
     hookAlive: false,
     hookActive: false,
@@ -63,8 +53,8 @@
     spaWatchTimer: null,
     hasSessionOverride: false,
     sessionEnabled: false,
-    sessionGainDb: DEFAULT_GAIN_DB,
-    sessionBlastGuard: DEFAULT_BLAST_GUARD,
+    sessionGainDb: contentShared.DEFAULT_GAIN_DB,
+    sessionBlastGuard: contentShared.DEFAULT_BLAST_GUARD,
   };
 
   globalThis.__tabNormalizerContentScriptV5 = {
@@ -81,8 +71,8 @@
   }
 
   function refreshLocationState() {
-    state.hostname = extractHostname(location.href);
-    state.siteKey = getSiteKey(state.hostname);
+    state.hostname = contentShared.extractHostname(location.href);
+    state.siteKey = contentShared.getSiteKey(state.hostname);
   }
 
   function ensureBootstrapListeners() {
@@ -236,7 +226,7 @@
   async function handleSetDocumentState(message) {
     state.hasSessionOverride = true;
     state.sessionEnabled = Boolean(message.enabled);
-    state.sessionGainDb = clampGainDb(message.gainDb);
+    state.sessionGainDb = contentShared.clampGainDb(message.gainDb);
     state.sessionBlastGuard = Boolean(message.blastGuard);
     scheduleSync('session-override', {
       enabled: state.sessionEnabled,
@@ -297,7 +287,7 @@
 
       if (payload && typeof payload.enabled === 'boolean') {
         enabled = payload.enabled;
-        gainDb = clampGainDb(payload.gainDb);
+        gainDb = contentShared.clampGainDb(payload.gainDb);
         blastGuard = Boolean(payload.blastGuard);
       } else if (state.hasSessionOverride) {
         enabled = state.sessionEnabled;
@@ -305,8 +295,8 @@
         blastGuard = state.sessionBlastGuard;
       } else {
         const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
-        const siteSettings = migrateSiteSettings(stored.siteSettings, stored.activeSites);
-        const config = getSiteConfig(siteSettings, {}, state.siteKey);
+        const siteSettings = contentShared.migrateSiteSettings(stored.siteSettings, stored.activeSites);
+        const config = contentShared.getSiteConfig(siteSettings, {}, state.siteKey);
         enabled = config.enabled;
         gainDb = config.gainDb;
         blastGuard = config.blastGuard;
@@ -325,7 +315,7 @@
       console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'blastGuard:', blastGuard, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason, 'session:', state.hasSessionOverride);
 
       const hookAlive = enabled ? await evaluateHookHealth() : state.hookAlive;
-      const action = getContentAction({ enabled, injected: state.injected, hookAlive });
+      const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
 
       if (action === 'inject') {
         setPendingStart();
@@ -543,7 +533,7 @@
       blastGuard = state.sessionBlastGuard;
     } else {
       const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
-      const config = getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
+      const config = contentShared.getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
       enabled = config.enabled;
       gainDb = config.gainDb;
       blastGuard = config.blastGuard;
@@ -568,7 +558,7 @@
       }
     }
 
-    const indicator = getPopupIndicator({
+    const indicator = contentShared.getPopupIndicator({
       enabled,
       hookAlive: state.hookAlive,
       hookActive: state.hookActive,

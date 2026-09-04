@@ -84,5 +84,4 @@ interface HTMLMediaElement {
 
 // No augmentation needed for HTMLOrSVGScriptElement (it's a type alias, not an interface)
 
-// Firefox service worker function
 declare function importScripts(...urls: string[]): void;

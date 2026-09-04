@@ -22,10 +22,6 @@
   }
 
   function getSiteKey(hostname) {
-    return String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
-  }
-
-  function getLegacySiteKey(hostname) {
     let normalized = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
     if (!normalized) return '';
 
@@ -53,6 +49,10 @@
     }
 
     return parts.slice(-2).join('.');
+  }
+
+  function getLegacySiteKey(hostname) {
+    return getSiteKey(hostname);
   }
 
   function migrateActiveSites(activeSites) {
@@ -182,8 +182,6 @@
 
     return 'gray';
   }
-
-  // --- Firefox port: exact-host site key (no subdomain collapsing) ---
 
   function getExactHostKey(url) {
     try {
