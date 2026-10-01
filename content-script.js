@@ -87,7 +87,7 @@
         storageChangeTimer = null;
         console.log('[cs] storage changed, syncing');
         scheduleSync('storage');
-      }, 100);
+      }, 50);
     });
 
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

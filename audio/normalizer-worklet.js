@@ -1,6 +1,4 @@
 const LOUDNESS_OFFSET = -0.691;
-const HOP_SECONDS = 0.1;
-const BLOCK_SECONDS = 0.4;
 
 // Fixed intensity=50 parameters (middle of V3.5 range)
 const TARGET_LUFS = -16;
@@ -39,6 +37,7 @@ const BLAST_GUARD_LIMITER_RELEASE_SECONDS = 0.35;
 const BLAST_GUARD_LIMITER_HOLD_SECONDS = 0.18;
 // LIMITER_RELEASE_COEFF calculated per-context in constructor using actual sampleRate
 const SOFT_KNEE_DB = 3;
+const SOFT_KNEE_RATIO = Math.pow(10, SOFT_KNEE_DB / 20);
 const ABSOLUTE_GATE_DB = -50;
 const RELATIVE_GATE_OFFSET_DB = 10;
 const GATE_PEAK = 0.01;
@@ -76,12 +75,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.writeIndex = 0;
     this.limiterAttackFrames = Math.max(1, Math.round(sampleRate * LIMITER_ATTACK_SECONDS));
 
-    this.hopFrameTarget = Math.max(1, Math.round(sampleRate * HOP_SECONDS));
-    this.blockHopCount = Math.max(1, Math.round(BLOCK_SECONDS / HOP_SECONDS));
     this.minAnalysisFrames = Math.round(sampleRate * MIN_ANALYSIS_SECONDS);
-    this.hopEnergy = 0;
-    this.hopFrames = 0;
-    this.hopPowers = [];
 
     this.port.onmessage = (event) => {
       if (event.data?.type === 'set-gain-db') {
@@ -167,11 +161,16 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     const gainStep = (endLog - startLog) / frameCount;
 
     let processLimiterGain = this.currentLimiterGain;
+    const ceilingLinear = this.getCeilingLinear();
+
+    let readIndex = this.writeIndex + this.bufferLength - this.delayFrames;
+    if (readIndex >= this.bufferLength) readIndex -= this.bufferLength;
+
+    let loudnessGain = Math.exp(startLog);
+    const loudnessStep = Math.exp(gainStep);
 
     // Process audio with lookahead limiting (V5's superior limiter)
     for (let i = 0; i < frameCount; i++) {
-      const readIndex = (this.writeIndex + this.bufferLength - this.delayFrames) % this.bufferLength;
-
       let framePeak = 0;
       for (let ch = 0; ch < inCh; ch++) {
         const sample = input[ch]?.[i] ?? input[0]?.[i] ?? 0;
@@ -181,7 +180,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
       this.scheduleLimiter(this.writeIndex, this.calcLimiterTarget(framePeak));
 
-      const loudnessGain = Math.exp(startLog + gainStep * i);
       processLimiterGain = this.stepLimiter(this.limiterTargets[readIndex]);
       const totalGain = loudnessGain * this.userGainLinear * processLimiterGain;
 
@@ -189,13 +187,17 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
         const ic = input[ch] ?? input[0];
         const writeSample = ic?.[i] ?? 0;
         const delayed = this.channelBuffers[ch][readIndex];
-        const processed = applySoftKnee(delayed * totalGain, this.getCeilingLinear(), SOFT_KNEE_DB);
+        const processed = applySoftKnee(delayed * totalGain, ceilingLinear, SOFT_KNEE_RATIO);
         output[ch][i] = processed;
         this.channelBuffers[ch][this.writeIndex] = writeSample;
       }
 
       this.limiterTargets[readIndex] = 1;
-      this.writeIndex = (this.writeIndex + 1) % this.bufferLength;
+      if (this.writeIndex === this.bufferLength - 1) this.writeIndex = 0;
+      else this.writeIndex++;
+      if (readIndex === this.bufferLength - 1) readIndex = 0;
+      else readIndex++;
+      loudnessGain *= loudnessStep;
     }
 
     this.currentGain = nextGain;
@@ -252,11 +254,12 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     // Comfort zone band - only correct when outside comfortable range
     const quietFloorDb = comfortMinDb - BAND_DEADBAND_DB;
     const loudCeilingDb = comfortMaxDb + BAND_DEADBAND_DB;
+    const bandDb = shortDb;
 
-    if (programDb < quietFloorDb) {
-      desiredDb += (quietFloorDb - programDb) * BAND_STRENGTH;
-    } else if (programDb > loudCeilingDb) {
-      desiredDb -= (programDb - loudCeilingDb) * BAND_STRENGTH;
+    if (bandDb < quietFloorDb) {
+      desiredDb += (quietFloorDb - bandDb) * BAND_STRENGTH;
+    } else if (bandDb > loudCeilingDb) {
+      desiredDb -= (bandDb - loudCeilingDb) * BAND_STRENGTH;
     }
 
     // Local dynamics - handle momentary spikes/dips differently from program
@@ -309,11 +312,14 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
   scheduleLimiter(writeIndex, targetGain) {
     if (targetGain >= 1) return;
-    for (let off = 0; off < this.limiterAttackFrames; off++) {
-      const ramp = 1 - off / this.limiterAttackFrames;
-      const idx = (writeIndex - off + this.bufferLength) % this.bufferLength;
-      const ramped = 1 + (targetGain - 1) * ramp;
+    const attack = this.limiterAttackFrames;
+    const delta = targetGain - 1;
+    let idx = writeIndex;
+    for (let off = 0; off < attack; off++) {
+      const ramped = 1 + delta * (1 - off / attack);
       this.limiterTargets[idx] = Math.min(this.limiterTargets[idx], ramped);
+      if (idx === 0) idx = this.bufferLength - 1;
+      else idx--;
     }
   }
 
@@ -363,7 +369,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 }
 
 function dbToGain(db) { return Math.pow(10, db / 20); }
-function gainToDb(gain) { return 20 * Math.log10(Math.max(Number(gain) || 1e-5, 1e-5)); }
 function clamp(value, min, max) { return Math.max(min, Math.min(max, Number(value) || 0)); }
 
 const MIN_GAIN_DB = -12;
@@ -377,10 +382,9 @@ function powerToDb(power) {
   return 10 * Math.log10(power + 1e-12);
 }
 
-function applySoftKnee(sample, ceiling, kneeDb) {
+function applySoftKnee(sample, ceiling, kneeRatio) {
   const abs = Math.abs(sample);
   if (abs <= ceiling) return sample;
-  const kneeRatio = dbToGain(kneeDb);
   const norm = (abs - ceiling) / Math.max(ceiling / kneeRatio, 1e-5);
   const limited = Math.min(ceiling, abs * (1 - Math.tanh(norm * 2) * 0.1));
   return Math.sign(sample) * limited;
