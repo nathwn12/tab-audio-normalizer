@@ -15,5 +15,6 @@ jobs:
           node-version: lts/*
       - run: if (Test-Path package.json) { npm ci }
         shell: pwsh
-      - run: npm run build --if-present
+      - run: if (Test-Path package.json) { npm run build --if-present }
+        shell: pwsh
       - run: npx --yes htmlhint --config .htmlhintrc "**/*.html" 2>$null || npx --yes htmlhint "**/*.html"
