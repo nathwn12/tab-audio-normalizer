@@ -123,7 +123,8 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
     for (let i = 0; i < frameCount; i++) {
       for (let ch = 0; ch < input.length; ch++) {
-        const sample = input[ch][i] ?? 0;
+        const rawSample = input[ch][i] ?? 0;
+        const sample = Number.isFinite(rawSample) ? rawSample : 0;
         const absolute = Math.abs(sample);
         if (absolute > blockPeak) blockPeak = absolute;
 
@@ -133,7 +134,13 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     }
 
     blockSq /= frameCount * input.length;
-    this.updateMeasurement(blockSq, blockPeak, frameCount);
+    if (Number.isFinite(blockSq)) {
+      this.updateMeasurement(blockSq, blockPeak, frameCount);
+    } else {
+      // A poisoned measurement block must never latch the estimators to NaN;
+      // keep the prior loudness and only advance the analysis clock.
+      this.analysisFrames += frameCount;
+    }
 
     // Compute target gain using V3.5's superior algorithm
     const momentaryDb = powerToDb(this.momentarySq);
@@ -173,7 +180,8 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < frameCount; i++) {
       let framePeak = 0;
       for (let ch = 0; ch < inCh; ch++) {
-        const sample = input[ch]?.[i] ?? input[0]?.[i] ?? 0;
+        const rawPeakSample = input[ch]?.[i] ?? input[0]?.[i] ?? 0;
+        const sample = Number.isFinite(rawPeakSample) ? rawPeakSample : 0;
         const tp = pushTruePeak(this.inputPeakHistory[ch], sample);
         if (tp > framePeak) framePeak = tp;
       }
@@ -185,7 +193,8 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
       for (let ch = 0; ch < outCh; ch++) {
         const ic = input[ch] ?? input[0];
-        const writeSample = ic?.[i] ?? 0;
+        const rawWrite = ic?.[i] ?? 0;
+        const writeSample = Number.isFinite(rawWrite) ? rawWrite : 0;
         const delayed = this.channelBuffers[ch][readIndex];
         const processed = applySoftKnee(delayed * totalGain, ceilingLinear, SOFT_KNEE_RATIO);
         output[ch][i] = processed;
@@ -292,9 +301,11 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
     let targetGain = dbToGain(desiredDb);
 
-    // Peak protection (V3.5 style + V5's better peak following)
+    // Peak protection (V3.5 style + V5's better peak following).
+    // Must anticipate the user gain applied downstream (totalGain), or a
+    // positive user gain pushes loud peaks over the ceiling after limiting.
     const smoothedPeak = Math.max(blockPeak, Math.sqrt(this.peakFollower));
-    const predictedPeak = smoothedPeak * targetGain;
+    const predictedPeak = smoothedPeak * targetGain * this.userGainLinear;
     if (predictedPeak > this.getCeilingLinear()) {
       targetGain *= this.getCeilingLinear() / predictedPeak;
     }
@@ -303,11 +314,16 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
   }
 
   calcLimiterTarget(peak) {
-    if (!Number.isFinite(peak) || peak <= this.getCeilingLinear()) return 1;
+    // Anticipate the user gain applied downstream at totalGain
+    // (loudnessGain * userGainLinear * limiterGain); otherwise the limiter
+    // guarantees the ceiling before the user gain is applied and the
+    // last-resort soft knee does the limiting via hard clipping.
+    const effectivePeak = peak * this.userGainLinear;
+    if (!Number.isFinite(effectivePeak) || effectivePeak <= this.getCeilingLinear()) return 1;
     if (this.blastGuard) {
       this.blastHoldFramesRemaining = Math.max(this.blastHoldFramesRemaining, this.blastGuardHoldFrames);
     }
-    return Math.max(0.05, Math.min(1, this.getCeilingLinear() / peak));
+    return Math.max(0.05, Math.min(1, this.getCeilingLinear() / effectivePeak));
   }
 
   scheduleLimiter(writeIndex, targetGain) {
@@ -351,7 +367,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
   ensurePeaks(n) {
     while (this.inputPeakHistory.length < n)
-      this.inputPeakHistory.push([0, 0, 0, 0]);
+      this.inputPeakHistory.push([0, 0, 0, 0, 0]);
   }
 
   weight(channel, sample) {
@@ -390,16 +406,17 @@ function applySoftKnee(sample, ceiling, kneeRatio) {
   return Math.sign(sample) * limited;
 }
 
-let truePeakCounter = 0;
-
 function pushTruePeak(history, sample) {
   history[0] = history[1];
   history[1] = history[2];
   history[2] = history[3];
   history[3] = sample;
 
-  truePeakCounter = (truePeakCounter + 1) & 3;
-  if (truePeakCounter !== 0) {
+  // Per-channel decimator: a module-scope counter is shared across channels,
+  // so with 2 channels one channel never interpolates. The 5th history slot
+  // is the channel's own counter (see ensurePeaks).
+  history[4] = (((history[4] | 0) + 1) & 3);
+  if (history[4] !== 0) {
     const abs2 = Math.abs(history[2]);
     const abs3 = Math.abs(history[3]);
     return abs2 > abs3 ? abs2 : abs3;
