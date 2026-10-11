@@ -100,7 +100,8 @@ async function init() {
 
     const state = await chrome.runtime.sendMessage({ type: 'GET_SITE_STATE', hostname: siteKey });
 
-    toggle.checked = initialState;
+    // Authority first: the siteToggles mirror can diverge from stored settings.
+    toggle.checked = state ? Boolean(state.enabled) : initialState;
     gainSlider.value = String(popupShared.clampGainDb(state?.gainDb));
     blastGuardToggle.checked = Boolean(state?.blastGuard);
     renderGain(gainSlider.value);
@@ -109,7 +110,7 @@ async function init() {
     syncBlastGuardControlState();
     syncPresetControlState();
 
-    if (initialState) {
+    if (toggle.checked) {
       await refreshDocumentStatus();
     } else {
       renderStatus({ indicator: 'gray', text: 'Off for this site.' });

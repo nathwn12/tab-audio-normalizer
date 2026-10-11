@@ -224,10 +224,12 @@
   }
 
   async function handleSetDocumentState(message) {
+    const keepGainDb = state.hasSessionOverride ? state.sessionGainDb : state.gainDb;
+    const keepBlastGuard = state.hasSessionOverride ? state.sessionBlastGuard : state.blastGuard;
     state.hasSessionOverride = true;
     state.sessionEnabled = Boolean(message.enabled);
-    state.sessionGainDb = contentShared.clampGainDb(message.gainDb);
-    state.sessionBlastGuard = Boolean(message.blastGuard);
+    state.sessionGainDb = message.gainDb === undefined ? keepGainDb : contentShared.clampGainDb(message.gainDb);
+    state.sessionBlastGuard = message.blastGuard === undefined ? keepBlastGuard : Boolean(message.blastGuard);
     scheduleSync('session-override', {
       enabled: state.sessionEnabled,
       gainDb: state.sessionGainDb,
@@ -403,7 +405,13 @@
           scheduleActivationRetry('inject-onload');
         }
       })
-      .catch(() => {});
+      .catch((error) => {
+        // A rejected injection must not stall later attempts until
+        // INJECT_TIMEOUT_MS expires: release the flag and surface the error.
+        state.injecting = false;
+        state.lastError = 'Failed to inject page hook.';
+        console.error('[cs] page-hook injection failed:', error);
+      });
   }
 
   function handleHookMessage(data) {

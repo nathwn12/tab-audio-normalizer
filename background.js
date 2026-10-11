@@ -354,11 +354,21 @@ chrome.storage.onChanged.addListener((changes, area) => {
     for (const siteKey of Object.keys(newToggles)) {
       if (newToggles[siteKey] !== oldToggles[siteKey]) {
         chrome.tabs.query({}, (tabs) => {
-          tabs.forEach(tab => {
-            if (tab.url && tab.id && new URL(tab.url).hostname.toLowerCase() === siteKey.split(':')[0]) {
-              chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_CHANGED', siteKey, enabled: newToggles[siteKey] }).catch(() => {});
-            }
-          });
+          void (async () => {
+            const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
+            const config = backgroundShared.getSiteConfig(stored.siteSettings, stored.activeSites, siteKey);
+            tabs.forEach(tab => {
+              if (tab.url && tab.id && backgroundShared.getSiteKey(backgroundShared.extractHostname(tab.url)) === siteKey) {
+                chrome.tabs.sendMessage(tab.id, {
+                  type: 'TOGGLE_CHANGED',
+                  siteKey,
+                  enabled: newToggles[siteKey],
+                  gainDb: config.gainDb,
+                  blastGuard: config.blastGuard,
+                }).catch(() => {});
+              }
+            });
+          })();
         });
       }
     }
