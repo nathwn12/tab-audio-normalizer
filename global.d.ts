@@ -42,7 +42,6 @@ interface TabNormalizerSharedApi {
     hookActive: boolean;
     lastError: string;
   }) => string;
-  getExactHostKey: (url: string) => string;
   storageGet: (keys: string | string[] | Record<string, unknown>) => Promise<Record<string, unknown>>;
   storageSet: (items: Record<string, unknown>) => Promise<void>;
   loadSiteState: (siteKey: string) => Promise<boolean | null>;
