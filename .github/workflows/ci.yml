@@ -13,7 +13,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
-          cache: npm
       - run: if (Test-Path package.json) { npm ci }
         shell: pwsh
       - run: npm run build --if-present
