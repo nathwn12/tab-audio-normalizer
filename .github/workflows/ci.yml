@@ -1,0 +1,20 @@
+# nathwn12 house CI — stack: static HTML/JS site (copy to .github/workflows/ci.yml)
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: if (Test-Path package.json) { npm ci }
+        shell: pwsh
+      - run: npm run build --if-present
+      - run: npx --yes htmlhint --config .htmlhintrc "**/*.html" 2>$null || npx --yes htmlhint "**/*.html"
