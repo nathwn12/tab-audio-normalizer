@@ -183,19 +183,6 @@
     return 'gray';
   }
 
-  function getExactHostKey(url) {
-    try {
-      const u = new URL(url);
-      let key = u.hostname.toLowerCase();
-      if (u.port && u.port !== '80' && u.port !== '443') {
-        key += ':' + u.port;
-      }
-      return key;
-    } catch {
-      return '';
-    }
-  }
-
   function storageGet(keys) {
     return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
   }
@@ -231,7 +218,6 @@
     setSiteEnabled,
     getContentAction,
     getPopupIndicator,
-    getExactHostKey,
     storageGet,
     storageSet,
     loadSiteState,
