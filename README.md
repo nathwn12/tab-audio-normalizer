@@ -1,70 +1,65 @@
-# Tab Audio Normalizer v5
+<p align="center">
+  <img src="assets/icon.svg" width="128" height="128" alt="Tab Audio Normalizer icon" />
+</p>
+<h1 align="center">Tab Audio Normalizer</h1>
+<p align="center"><strong>Normalize per-site audio loudness in Chrome and Brave.</strong></p>
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/nathwn12/tab-audio-normalizer" alt="License" /></a>
+  <img src="https://img.shields.io/github/languages/top/nathwn12/tab-audio-normalizer" alt="Language" />
+  <img src="https://img.shields.io/badge/platform-chrome--brave-2b3137?logo=googlechrome&logoColor=white" alt="Platform" />
+  <a href="https://github.com/nathwn12/tab-audio-normalizer/actions/workflows/ci.yml"><img src="https://github.com/nathwn12/tab-audio-normalizer/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+</p>
 
-Lightweight Chromium/Brave extension for per-site audio normalization.
+## What it is
 
-## What it does
+Tab Audio Normalizer is a Manifest V3 browser extension for Chrome and Brave that keeps per-site audio inside a comfortable loudness range. Each hostname gets a single toggle that persists across tabs, with adaptive gain control doing the levelling. It is for anyone who bounces between loud and quiet videos, streams, and calls.
 
-- Keeps audio in comfortable loudness range (-23.5 to -18 LUFS) with adaptive gain control
-- Single toggle per hostname - persists across tabs
-- Works with: YouTube, Spotify, Facebook, Instagram, TikTok, and more
-- Uses EBU R128-inspired 400ms loudness measurement
-- Blast Guard peak protection mode for sensitive content
+## Why
 
-## Files
+Loudness jumps between sites and videos, so one tab whispers while the next one shouts. This extension evens that out automatically, per site, with all processing kept local in the browser.
 
-```
-audio-normalizeV5/
-├── manifest.json          # Extension manifest v3
-├── background.js          # Storage, injection, site coordination
-├── content-script.js      # Page injection controller + SPA detection
-├── page-hook.js          # Web Audio API patching
-├── shared.js             # Cross-context helpers (site keys, config, migration)
-├── popup.html            # Controls UI (dark theme, presets, gain slider)
-├── popup.js              # Popup logic
-├── audio/
-│   ├── normalizer-worklet.js  # Audio processing
-│   └── icon-*.png        # Extension icons
-└── README.md
-```
+## Features
 
-### Installation (Brave / Chromium)
-1. Open `brave://extensions` or `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select this folder
+- Per-hostname Active toggle that persists across tabs
+- Adaptive gain control holding audio near a -23.5 to -18 LUFS comfort zone
+- EBU R128-inspired 400ms loudness measurement with momentary, short-term, and program windows
+- Blast Guard mode for stricter peak protection with a -1 dBTP true-peak ceiling
+- Gain slider (-12 to +12 dB) plus Speech, Music, and Boost presets
+- Content-script injection into AudioWorklet processing, with SPA navigation detection
+- All audio processing stays local; nothing is uploaded or transmitted
+
+## Install
+
+1. Open `chrome://extensions` or `brave://extensions`.
+2. Enable **Developer mode**.
+3. Click **Load unpacked**.
+4. Select this folder.
 
 ## Usage
 
-1. Visit a site with audio (YouTube, etc.)
-2. Click extension icon
-3. Toggle **Active** ON for that site
-4. Adjust gain slider or use presets (Speech/Music/Boost)
-5. Enable **Blast Guard** for stricter peak protection
-6. Open new tabs to same site → auto-normalizes
+1. Visit a site with audio, such as YouTube.
+2. Click the extension icon to open the popup.
+3. Toggle **Active** ON for that site.
+4. Adjust the gain slider or pick a Speech, Music, or Boost preset.
+5. Open new tabs on the same site; they normalize automatically.
 
-## Presets
+## Docs
 
-| Preset | Gain | Use case |
-|--------|------|----------|
-| Speech | -3 dB | Dialogue-heavy content |
-| Music  |  0 dB | Balanced default |
-| Boost  | +3 dB | Quiet content |
+- [PRIVACY_POLICY.md](PRIVACY_POLICY.md) — what data the extension touches and why it stays local.
+- [STORE_SUBMISSION.md](STORE_SUBMISSION.md) — Chrome Web Store submission checklist.
 
-## Technical
+## Status
 
-- **Comfort zone:** -23.5 to -18 LUFS (content outside this range gets gentle correction)
-- **Loudness measurement:** Three-window algorithm (momentary/short/program) with gating
-- **Attack/Release:** 20ms down / 250ms up (25ms down in Blast Guard), 50ms minimum analysis, no startup assist
-- **True peak limiting:** -1 dBTP ceiling with 3ms lookahead
-- **Architecture:** Content script injection → AudioWorklet processing (Chromium-only, no Firefox support)
+**Unverified** — as-is, use at your own risk. Clean-profile install and store review are unverified.
 
-## Permissions
+## License
 
-- `storage`: Persist per-site preferences
-- `tabs`: Get current tab info for popup
-- `scripting`: Inject audio processing into page context
-- `host_permissions`: All URLs (required for universal audio normalization)
+MIT — see [LICENSE](LICENSE).
 
-## Privacy
-
-All processing happens locally in the browser. No audio is uploaded or transmitted.
+<!-- nathwn12 house footer: identical in every repo. Do not edit. -->
+<p align="center">
+  <a href="https://github.com/nathwn12"><img src="assets/signature.svg" width="96" alt="nathwn12" /></a>
+</p>
+<p align="center">
+  <sub>Built by <a href="https://github.com/nathwn12">nathwn12</a> · <a href="https://github.com/nathwn12?tab=repositories">All projects</a> · MIT</sub>
+</p>
