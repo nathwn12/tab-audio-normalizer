@@ -7,7 +7,6 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/nathwn12/tab-audio-normalizer" alt="License" /></a>
   <img src="https://img.shields.io/github/languages/top/nathwn12/tab-audio-normalizer" alt="Language" />
   <img src="https://img.shields.io/badge/platform-chrome--brave-2b3137?logo=googlechrome&logoColor=white" alt="Platform" />
-  <a href="https://github.com/nathwn12/tab-audio-normalizer/actions/workflows/ci.yml"><img src="https://github.com/nathwn12/tab-audio-normalizer/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 ## What it is
