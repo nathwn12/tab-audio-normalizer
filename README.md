@@ -32,7 +32,7 @@ page-hook.js (MAIN world via chrome.scripting.executeScript)
 audio/normalizer-worklet.js (AudioWorkletProcessor, loaded by page-hook.js)
 ```
 
-Notes: `shared.js` is a UMD module and the source of truth for `getSiteKey`, `migrateSiteSettings`, `get/setSiteConfig`, `getContentAction`, `getPopupIndicator`, and gain clamp (−12…+12 dB, 0.5 step). `page-hook.js` runs in MAIN world and cannot import `shared.js`, so `MIN/MAX_GAIN_DB`, `CHANNEL` (`tab-normalizer-v5`), and `PENDING_ATTR` are deliberately duplicated — do not "dedupe". `content-script.js` handles lifecycle/sync only, no audio processing. Storage: `siteSettings` is authoritative; legacy `activeSites` is migrated then cleared to `{}`. Loudness measurement is EBU R128-inspired with 400 ms blocks and momentary, short-term, and program windows; Blast Guard adds a −1 dBTP true-peak ceiling.
+Notes: `shared.js` is a UMD module and the source of truth for `getSiteKey`, `migrateSiteSettings`, `get/setSiteConfig`, `getContentAction`, `getPopupIndicator`, and gain clamp (−12…+12 dB, 0.5 step). `page-hook.js` runs in MAIN world and cannot import `shared.js`, so `MIN/MAX_GAIN_DB`, `CHANNEL` (`tab-normalizer-v5`), and `PENDING_ATTR` are deliberately duplicated — do not "dedupe". `content-script.js` handles lifecycle/sync only, no audio processing. Storage: `siteSettings` is authoritative; legacy `activeSites` is migrated then cleared to `{}`. Loudness measurement is EBU R128-inspired with 400 ms blocks and momentary, short-term, and program windows; Blast Guard adds a −2 dBTP true-peak ceiling.
 
 ## Getting started
 
@@ -70,7 +70,7 @@ CHANGELOG.md             release history (Keep a Changelog)
 - Per-hostname Active toggle persisted across tabs (sibling-subdomain and ccTLD aware via `getSiteKey`)
 - Adaptive gain holding audio near the −23.5 to −18 LUFS comfort zone
 - EBU R128-inspired 400 ms loudness measurement (momentary, short-term, program windows)
-- Blast Guard mode with −1 dBTP true-peak ceiling
+- Blast Guard mode with −2 dBTP true-peak ceiling
 - Gain slider (−12 to +12 dB, 0.5 step) plus Speech, Music, and Boost presets
 - SPA navigation detection and service-worker restart recovery
 - Fully local processing; no network transmission of audio
