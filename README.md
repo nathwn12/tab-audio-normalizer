@@ -1,55 +1,107 @@
 <p align="center">
-  <img src="assets/icon.svg" width="128" height="128" alt="Tab Audio Normalizer icon" />
+  <img src="assets/icon.svg" width="120" height="120" alt="Tab Audio Normalizer icon" />
 </p>
 <h1 align="center">Tab Audio Normalizer</h1>
-<p align="center"><strong>Normalize per-site audio loudness in Chrome and Brave.</strong></p>
+<p align="center"><strong>Keep per-site tab audio at a comfortable loudness in Chrome and Brave.</strong></p>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/nathwn12/tab-audio-normalizer" alt="License" /></a>
   <img src="https://img.shields.io/github/languages/top/nathwn12/tab-audio-normalizer" alt="Language" />
   <img src="https://img.shields.io/badge/platform-chrome--brave-2b3137?logo=googlechrome&logoColor=white" alt="Platform" />
 </p>
 
-## What it is
+## Project Name and Description
 
-Tab Audio Normalizer is a Manifest V3 browser extension for Chrome and Brave that keeps per-site audio inside a comfortable loudness range. Each hostname gets a single toggle that persists across tabs, with adaptive gain control doing the levelling. It is for anyone who bounces between loud and quiet videos, streams, and calls.
+**Tab Audio Normalizer** (v5.2.0, Manifest V3) evens out loudness differences between tabs and sites. Each hostname gets one persisted Active toggle; adaptive gain control then holds audio inside a −23.5 to −18 LUFS comfort zone. All processing stays local in the browser — nothing is uploaded or transmitted. For anyone who bounces between loud and quiet videos, streams, and calls in Chrome or Brave (Chromium only, no Firefox).
 
-## Why
+## Technology Stack
 
-Loudness jumps between sites and videos, so one tab whispers while the next one shouts. This extension evens that out automatically, per site, with all processing kept local in the browser.
+- Vanilla JavaScript, Manifest V3 extension (no framework, no build step)
+- Web Audio: `AudioContext` patch + `AudioWorkletProcessor` (`audio/normalizer-worklet.js`)
+- Extension APIs: `storage`, `tabs`, `scripting` permissions; `http://*/*` and `https://*/*` host permissions
+- Dev-only: Node.js, TypeScript `^6.0.3` and `@types/chrome` `~0.0.332` for `npm run typecheck` (`tsc --noEmit`, `checkJs`)
 
-## Features
+## Architecture
 
-- Per-hostname Active toggle that persists across tabs
-- Adaptive gain control holding audio near a -23.5 to -18 LUFS comfort zone
-- EBU R128-inspired 400ms loudness measurement with momentary, short-term, and program windows
-- Blast Guard mode for stricter peak protection with a -1 dBTP true-peak ceiling
-- Gain slider (-12 to +12 dB) plus Speech, Music, and Boost presets
-- Content-script injection into AudioWorklet processing, with SPA navigation detection
-- All audio processing stays local; nothing is uploaded or transmitted
+```text
+popup.html / popup.js ── chrome.storage ──► siteSettings (source of truth)
+background.js (service worker, importScripts shared.js)
+content-script.js + shared.js (ISOLATED world, document_start, all frames)
+        │ window.postMessage on "tab-normalizer-v5"
+page-hook.js (MAIN world via chrome.scripting.executeScript)
+        │ patches AudioContext / AudioNode.connect / HTMLMediaElement.play
+audio/normalizer-worklet.js (AudioWorkletProcessor, loaded by page-hook.js)
+```
 
-## Install
+Notes: `shared.js` is a UMD module and the source of truth for `getSiteKey`, `migrateSiteSettings`, `get/setSiteConfig`, `getContentAction`, `getPopupIndicator`, and gain clamp (−12…+12 dB, 0.5 step). `page-hook.js` runs in MAIN world and cannot import `shared.js`, so `MIN/MAX_GAIN_DB`, `CHANNEL` (`tab-normalizer-v5`), and `PENDING_ATTR` are deliberately duplicated — do not "dedupe". `content-script.js` handles lifecycle/sync only, no audio processing. Storage: `siteSettings` is authoritative; legacy `activeSites` is migrated then cleared to `{}`. Loudness measurement is EBU R128-inspired with 400 ms blocks and momentary, short-term, and program windows; Blast Guard adds a −1 dBTP true-peak ceiling.
 
-1. Open `chrome://extensions` or `brave://extensions`.
+## Getting Started
+
+Prerequisites: Chrome or Brave (desktop), Developer mode access.
+
+1. Open `chrome://extensions` (or `brave://extensions`).
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
-4. Select this folder.
+4. Select the repo root (the folder containing `manifest.json`).
+5. Visit a site with audio, click the extension icon, and toggle **Active** ON for that site.
 
-## Usage
+> [!NOTE]
+> There is no build step. `package.json` / `tsconfig.json` are local-only helpers for typechecking; loading the unpacked repo root is the install.
 
-1. Visit a site with audio, such as YouTube.
-2. Click the extension icon to open the popup.
-3. Toggle **Active** ON for that site.
-4. Adjust the gain slider or pick a Speech, Music, or Boost preset.
-5. Open new tabs on the same site; they normalize automatically.
+## Project Structure
 
-## Docs
+```text
+manifest.json            MV3 manifest (v5.2.0; storage/tabs/scripting; popup.html)
+background.js            service worker
+content-script.js        ISOLATED-world lifecycle/sync (no audio processing)
+shared.js                UMD source of truth (site keys, config, gain clamp)
+page-hook.js             MAIN-world AudioContext/connect/play patch
+audio/normalizer-worklet.js  AudioWorkletProcessor DSP
+audio/icon-*.png         toolbar/store raster icons (16/32/48/128)
+assets/icon.svg          house tile mark (README header)
+popup.html / popup.js    per-site popup (Active toggle, gain, presets, Blast Guard)
+global.d.ts              local-only type declarations for checkJs
+PRIVACY_POLICY.md        data-handling statement
+STORE_SUBMISSION.md      Web Store submission checklist
+CHANGELOG.md             release history (Keep a Changelog)
+```
 
-- [PRIVACY_POLICY.md](PRIVACY_POLICY.md) — what data the extension touches and why it stays local.
-- [STORE_SUBMISSION.md](STORE_SUBMISSION.md) — Chrome Web Store submission checklist.
+## Key Features
 
-## Status
+- Per-hostname Active toggle persisted across tabs (sibling-subdomain and ccTLD aware via `getSiteKey`)
+- Adaptive gain holding audio near the −23.5 to −18 LUFS comfort zone
+- EBU R128-inspired 400 ms loudness measurement (momentary, short-term, program windows)
+- Blast Guard mode with −1 dBTP true-peak ceiling
+- Gain slider (−12 to +12 dB, 0.5 step) plus Speech, Music, and Boost presets
+- SPA navigation detection and service-worker restart recovery
+- Fully local processing; no network transmission of audio
 
-**Unverified** — as-is, use at your own risk. Clean-profile install and store review are unverified.
+## Development Workflow
+
+- Source change? Edit the root `*.js` directly — no bundler, reload the unpacked extension to test.
+- Typecheck: `npm install` once, then `npm run typecheck` (`tsc --noEmit`; only root `*.js` + `*.d.ts` are checked, `tests/` excluded, `qa/*.cjs` never typechecked).
+- Unit tests: `node tests/shared.test.js` when touching `shared.js`.
+- Popup IDs are a contract with QA — preserve `#hostname`, `#status-dot`, `#status-text`, `#toggle`, `#blast-guard`, `#gain-slider`, `#gain-value`, `#reset-btn`.
+- Popup disables gain/preset/Blast Guard controls unless the per-site toggle is on.
+
+> [!CAUTION]
+> Never play audio in a test. `qa/extension-qa.cjs` and `qa/responsive-normalizer-qa.cjs` launch Chromium with a real `AudioContext` and are **banned from execution**. Verify audio paths silently: static/code checks plus offline numeric analysis of captured buffers in Node (stub `AudioWorkletProcessor` / `registerProcessor` / `sampleRate`, call `process()` on synthetic `Float32Array` blocks). If a browser audio check seems unavoidable, stop and get explicit approval first.
+
+## Coding Standards
+
+- `shared.js` is the single source of truth for site-key, config, and gain logic; ISOLATED/MAIN duplication of constants is intentional (see `docs/DELETION_LOG.md`).
+- `content-script.js` stays lifecycle/sync only; DSP lives in the worklet and the page hook.
+- Consult `docs/DELETION_LOG.md` before deleting code — it records prior dead-code removals and the duplication rationale.
+- Keep the MV3 surface minimal: no new permissions or host patterns without a manifest-verified reason.
+
+## Testing
+
+- `node tests/shared.test.js` — unit tests for `shared.js` (11/11 passing at last check).
+- `npm run typecheck` — `tsc --noEmit` with `checkJs` (needs `npm install` first).
+- Browser QA scripts exist (`qa/`) but are banned from execution (see caution above); run only static/offline checks.
+
+## Contributing
+
+Small, focused PRs against `main`. Keep the unpacked-load flow working, preserve the popup ID contract, add or update unit tests when touching `shared.js`, and run `npm run typecheck`. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
