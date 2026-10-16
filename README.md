@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.svg" width="120" height="120" alt="Tab Audio Normalizer icon" />
+  <img src="audio/icon-128.png" width="120" height="120" alt="Tab Audio Normalizer icon" />
 </p>
 <h1 align="center">Tab Audio Normalizer</h1>
 <p align="center"><strong>Keep per-site tab audio at a comfortable loudness in Chrome and Brave.</strong></p>
@@ -104,7 +104,7 @@ CHANGELOG.md             release history (Keep a Changelog)
 
 ## Contributing
 
-Small, focused PRs against `main`. Keep the unpacked-load flow working, preserve the popup ID contract, add or update unit tests (local-only) when touching `shared.js`, and run `npm run typecheck`. See [CHANGELOG.md](CHANGELOG.md) for release history.
+Small, focused PRs against `main`. See `AGENTS.md` for the contributor contract. Keep the unpacked-load flow working, preserve the popup ID contract, add or update unit tests (local-only) when touching `shared.js`, and run `npm run typecheck`. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
