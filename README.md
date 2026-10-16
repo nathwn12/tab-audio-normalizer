@@ -104,7 +104,7 @@ CHANGELOG.md             release history (Keep a Changelog)
 
 ## Contributing
 
-Small, focused PRs against `main`. Keep the unpacked-load flow working, preserve the popup ID contract, add or update unit tests (local-only) when touching `shared.js`, and run `npm run typecheck`. See [CHANGELOG.md](CHANGELOG.md) for release history.
+Small, focused PRs against `main`. See `AGENTS.md` for the contributor contract. Keep the unpacked-load flow working, preserve the popup ID contract, add or update unit tests (local-only) when touching `shared.js`, and run `npm run typecheck`. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
