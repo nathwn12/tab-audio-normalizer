@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.svg" width="120" height="120" alt="Tab Audio Normalizer icon" />
+  <img src="audio/icon-128.png" width="120" height="120" alt="Tab Audio Normalizer icon" />
 </p>
 <h1 align="center">Tab Audio Normalizer</h1>
 <p align="center"><strong>Keep per-site tab audio at a comfortable loudness in Chrome and Brave.</strong></p>
