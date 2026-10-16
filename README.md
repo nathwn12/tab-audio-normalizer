@@ -59,7 +59,7 @@ audio/normalizer-worklet.js  AudioWorkletProcessor DSP
 audio/icon-*.png         toolbar/store raster icons (16/32/48/128)
 assets/icon.svg          house tile mark (README header)
 popup.html / popup.js    per-site popup (Active toggle, gain, presets, Blast Guard)
-global.d.ts              local-only type declarations for checkJs
+global.d.ts              type declarations for checkJs
 PRIVACY_POLICY.md        data-handling statement
 STORE_SUBMISSION.md      Web Store submission checklist
 CHANGELOG.md             release history (Keep a Changelog)
@@ -78,13 +78,13 @@ CHANGELOG.md             release history (Keep a Changelog)
 ## Development workflow
 
 - Source change? Edit the root `*.js` directly — no bundler, reload the unpacked extension to test.
-- Typecheck: `npm install` once, then `npm run typecheck` (`tsc --noEmit`; only root `*.js` + `*.d.ts` are checked, `tests/` excluded, `qa/*.cjs` never typechecked).
-- Unit tests: `node tests/shared.test.js` when touching `shared.js`.
+- Typecheck (local-only helpers, absent from a fresh clone): `npm install` once, then `npm run typecheck` (`tsc --noEmit`; only root `*.js` + `*.d.ts` are checked, `tests/` excluded, `qa/*.cjs` never typechecked).
+- Unit tests (local-only, not shipped): `node tests/shared.test.js` when touching `shared.js`.
 - Popup IDs are a contract with QA — preserve `#hostname`, `#status-dot`, `#status-text`, `#toggle`, `#blast-guard`, `#gain-slider`, `#gain-value`, `#reset-btn`.
 - Popup disables gain/preset/Blast Guard controls unless the per-site toggle is on.
 
 > [!CAUTION]
-> Never play audio in a test. `qa/extension-qa.cjs` and `qa/responsive-normalizer-qa.cjs` launch Chromium with a real `AudioContext` and are **banned from execution**. Verify audio paths silently: static/code checks plus offline numeric analysis of captured buffers in Node (stub `AudioWorkletProcessor` / `registerProcessor` / `sampleRate`, call `process()` on synthetic `Float32Array` blocks). If a browser audio check seems unavoidable, stop and get explicit approval first.
+> Never play audio in a test. The local-only `qa/extension-qa.cjs` and `qa/responsive-normalizer-qa.cjs` launch Chromium with a real `AudioContext` and are **banned from execution**. Verify audio paths silently: static/code checks plus offline numeric analysis of captured buffers in Node (stub `AudioWorkletProcessor` / `registerProcessor` / `sampleRate`, call `process()` on synthetic `Float32Array` blocks). If a browser audio check seems unavoidable, stop and get explicit approval first.
 
 ## Coding standards
 
@@ -95,13 +95,16 @@ CHANGELOG.md             release history (Keep a Changelog)
 
 ## Testing
 
+> [!NOTE]
+> The test harness is local-only and not shipped: `tests/`, `qa/`, `package.json`, and `tsconfig.json` are gitignored, so none of the commands below work from a fresh clone.
+
 - `node tests/shared.test.js` — unit tests for `shared.js` (11/11 passing at last check).
 - `npm run typecheck` — `tsc --noEmit` with `checkJs` (needs `npm install` first).
-- Browser QA scripts exist (`qa/`) but are banned from execution (see caution above); run only static/offline checks.
+- Browser QA scripts (`qa/`, local-only) are banned from execution (see caution above); run only static/offline checks.
 
 ## Contributing
 
-Small, focused PRs against `main`. Keep the unpacked-load flow working, preserve the popup ID contract, add or update unit tests when touching `shared.js`, and run `npm run typecheck`. See [CHANGELOG.md](CHANGELOG.md) for release history.
+Small, focused PRs against `main`. Keep the unpacked-load flow working, preserve the popup ID contract, add or update unit tests (local-only) when touching `shared.js`, and run `npm run typecheck`. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
