@@ -57,6 +57,25 @@
 - JSDoc `@type` annotations — all serve legitimate type-checking purposes for `checkJs` with `strictNullChecks: true`
 - No commented-out code blocks found anywhere in source files
 
+## [2026-10-18] Refactor Session — Post-Fix Dead Code Cleanup
+
+### Unused Exports Removed
+- `background.js`: `MIRROR_RECONCILED_KEY` (line 64) — defined as `const MIRROR_RECONCILED_KEY = 'tnMirrorReconciled'` but never referenced anywhere; the only grep match is the declaration itself. The per-site `site:<key>` record replaced the mirror-reconciled marker.
+- `shared.js`: `reconcileMirrorIntoSettings` — zero callers in product code, tests, or QA. Its toggle-wins-`enabled` rule now lives in `migrateLegacyToRecord` (the surviving read-only migration). Its `global.d.ts` signature removed too.
+- `shared.js`: `loadSiteState` — zero product callers; read `siteToggles` through `storageGet` only. The required legacy READ paths (`migrateLegacyToRecord`, `migrateActiveSitesOnce`, the legacy key normalisation, and every `siteSettings` / `activeSites` / `siteToggles` read in `background.js` / `content-script.js`) are untouched.
+- `shared.js`: `storageGet` / `storageSet` — generic passthroughs with zero product callers (`storageGet`'s only caller was the deleted `loadSiteState`; `storageSet`'s only product caller was the already-deleted `saveSiteState` writer). Product code uses `chrome.storage.local` directly. Signatures removed from `global.d.ts`.
+
+### Impact
+- Files modified: 4 (`background.js`, `shared.js`, `global.d.ts`, plus `tests/setting-loss.test.js` recurrence test updated to assert absence instead of preservation)
+- Lines of code removed: ~57 (1 in background.js, 48 in shared.js, 8 in global.d.ts)
+- Bundle size impact: negligible (all removed symbols were dead code never executed)
+
+### Verification
+- TypeScript typecheck (`npm run typecheck`): passes (0 errors)
+- Unit tests (`node tests/shared.test.js`, `node tests/setting-loss.test.js`): all pass, including the legacy-only-store migration test
+- Live loop (`node qa/proof-live-persistence.cjs`): GREEN
+- No runtime behavior changed — removed symbols were never referenced by any runtime consumer
+
 ## [2026-10-11] Refactor Session — Dead Export Cleanup
 
 ### Unused Exports Removed
@@ -71,3 +90,25 @@
 - TypeScript typecheck (`tsc --noEmit`): passes (0 errors)
 - Unit tests (`node tests/shared.test.js`): all pass
 - No runtime behavior changed — removed export was never referenced by any runtime consumer
+
+## [2026-10-18] Refactor Session — Finding 5 cleanup (current removals + backfill)
+
+### Dead Code Removed (current)
+- `audio/normalizer-worklet.js`: `loudStep` — calculated as `Math.exp(gainStep)` and discarded via `void loudStep`. The per-sample gain ramp is driven entirely by `loudLog += gainStep` / `loudLin = Math.exp(loudLog)`; `loudStep` had no reader. Removed with its `void` use. Decision: remove (dead).
+- `popup.js`: `statusTimer` — assigned from `setInterval(..., 750)` but never read or cleared. The 750 ms document-status poll is fire-and-forget; the popup document dies on close so there is nothing to clear. Removed the handle, kept the bare `setInterval` call. Decision: remove the variable, keep the poll (no behaviour change).
+- `popup.js`: `saveGain(gainDb)` — thin wrapper around `saveGainInner(gainDb)` with no product caller (slider input, preset and reset all call `saveGainInner` directly; only tests called `saveGain`). Removed the wrapper from the shipped popup; `tests/setting-loss.test.js` now calls the product path `saveGainInner` directly (4 call sites). Decision: remove (test-only surface deleted from product).
+
+### Backfill: earlier removals the log did not inventory
+- `popup.js`: `queueGainSave(gainDb)` + `saveGainTimer` — 120 ms debounce queue plus the `unload` flush that drained it. Removed when the popup moved to immediate dispatch (every `input` sends its own field-level intent at once; RESEARCH §6 documents no flush-on-teardown facility, so a queued-but-unwritten value would be lost on close). No `unload` handler remains by design; every change is already sent on its `change`/`input` event. The `window.addEventListener('unload', ...)` clear of both timers went with the queue.
+- `audio/normalizer-worklet.js`: pre-rewrite exponential-window helpers deleted in the gated ITU-R BS.1770-4 rewrite — top-level `lufsToInternalDb`, `powerToDb`, `applySoftKnee`, `pushTruePeak`, `createBiquadState`, `createKWeightingChannel`, `processBiquad`, `designHighPass`, `designHighShelf`, and the old processor methods they served (`updateMeasurement`, `computeTargetGain`, `calcLimiterTarget`, `getCeilingLinear`, `ensureBuffers`/`ensureFilters`/`ensurePeaks`, `weight`, `nextPowerOfTwo`). Replaced by `initKCoeffs` (exact libebur128 prototype derivation) and `buildInterpPhases` (97-tap Kaiser 4x oversampler) plus the block/gate/limiter path documented in the worklet header.
+
+### Impact
+- Files modified: 3 (`audio/normalizer-worklet.js`, `popup.js`, `tests/setting-loss.test.js` test-only call-site rename)
+- Lines of code removed: ~10 product lines (loudStep decl+use, statusTimer decl, saveGain wrapper) plus the earlier queue/debounce (~15 lines) and worklet helpers (~100 lines in the rewrite) now inventoried
+- Bundle size impact: negligible; all removed symbols were dead or test-only in product
+
+### Verification
+- TypeScript typecheck (`npm run typecheck`): passes (0 errors)
+- Unit tests (`node tests/shared.test.js`, `node tests/setting-loss.test.js`): all pass (38/38 setting-loss incl. the new sequence test)
+- Loudness harness (`node qa/loudness-verify.cjs`): OVERALL ALL PASS (incl. new TRANSITION + TELEMETRY rows)
+- No runtime behavior changed except the intended Finding 1/2 fixes (mode-switch reset, output-aligned telemetry) covered by their own regression rows — the three Finding 5 removals are behaviour-preserving
