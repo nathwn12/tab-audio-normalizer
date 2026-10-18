@@ -19,3 +19,8 @@ node_modules/
 Thumbs.db
 *.log
 *.json
+
+# Tracked acceptance harness; fixtures stay ignored
+!qa/
+qa/*
+!qa/loudness-verify.cjs
