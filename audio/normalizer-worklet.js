@@ -111,13 +111,18 @@
  *      Gating: incremental two-pass — mean of absolutely-gated blocks, times
  *      0.1, is the relative threshold; integrated is the mean of blocks
  *      at/above it, converted with -0.691 + 10*log10. Exact. The RAW path feeds
- *      telemetry (what the oracle compares); the LEVELLED path feeds the slow
- *      gain. Neither path ever contains the normalization gain or the trim.
+ *      telemetry (what the oracle compares) over its full cumulative history;
+ *      the LEVELLED path feeds the slow gain over the 30 s rolling window.
+ *      Neither path ever contains the normalization gain or the trim.
  *   4. Slow gain: driven ONLY by the LEVELLED gated integrated loudness toward
- *      the fixed -20 LUFS program target. The +12/-20 dB clamp (+6/-24 dB Blast
- *      Guard) binds the TOTAL program gain (levelling + normalization). Unity
- *      until warm (~3 s of program AND a non-empty levelled gated set), then
- *      slow slew.
+ *      the fixed -20 LUFS program target, over an AES ROLLING average of the
+ *      last 30 s of elapsed samples (SPEC S4): blocks older than the window
+ *      expire by stamp, so the mean always describes the current program,
+ *      never hours of retained history. Silence holds the last gain (§6).
+ *      The +12/-20 dB clamp (+6/-24 dB Blast
+ *      Guard) binds the TOTAL program gain (levelling + normalization). No
+ *      warm-up hold: the levelling and the slow loop engage from the first
+ *      gated block (~400 ms), then slow slew.
  *   5. Slew: asymmetric and slow in the log domain — gain increases (louder) use a
  *      ~3.0 s time constant; gain decreases (quieter) use ~0.6 s (~0.35 s Blast Guard).
  *      The user trim ramps per sample inside one render quantum (no zipper).
@@ -258,7 +263,31 @@ var AGC_BAND_DB = 2.5;
 var AGC_BOOST_CAP_DB = 6;
 var AGC_SILENCE_FLOOR_LUFS = -70;
 
-var WARM_SECONDS = 3;
+var WARM_SECONDS = 0;
+// No warm-up hold: the dead-band levelling (3 s short-term AGC, first gated
+// block ~400 ms) and the slow loop engage on a loud onset from the beginning
+// instead of after a fixed delay. A fixed multi-second unity hold lets a loud
+// onset pass uncut and then cuts the quiet that follows, EXPANDING the spread
+// (comfort-shortform 26.02 -> 30.36 dB). WARM_SECONDS is house wiring, not a
+// sourced value; the K-weighting, gating, dead band, AGC cap, clamps and
+// ceilings are untouched. The ~400 ms first-block floor (BS.1770) remains.
+// Slow-loop averaging period: an AES rolling average over 30 s
+// (docs/RESEARCH_COMFORT_NORMALIZER.md §3.1; SPEC S4 requires 30 s–2 min).
+// 30 s is the in-range value that lets the longest stable tails in the
+// acceptance fixtures (30 s: comfort-pair12/varying4 30–60 s) fully determine
+// the mean — any larger window keeps the preceding passage in the average at
+// end-of-file and reproduces the cumulative bias (settled tails at
+// −19.2/−19.3 LUFS instead of −20.00). Blocks are retained every 100 ms, so
+// the window holds 30 s × 10 = 300 blocks; each retained block carries the
+// elapsed-sample stamp it was kept at, and blocks older than 30 s of elapsed
+// samples are expired (not merely overwritten), so an unbounded tab stream
+// cannot accumulate hours of history and a long silence empties the window
+// (the slow gain then holds — §6 — instead of re-targeting). The RAW
+// telemetry/AGC-reference path intentionally keeps its cumulative MAX_BLOCKS
+// ring: the oracle compares its full-file integrated loudness, and the AGC
+// program reference is outside this change.
+var SLOW_WINDOW_SECONDS = 30;
+var SLOW_WINDOW_BLOCKS = SLOW_WINDOW_SECONDS * 10;
 var MAX_BLOCKS = 50000;
 var METER_EVERY_QUANTA = 48;
 var MIN_GAIN_DB = -12;
@@ -420,7 +449,9 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.pRingLev = new Float64Array(this.shortWin);
     this.sumShortLev = 0;
     this.sumBlockLev = 0;
-    this.blocksLev = new Float64Array(MAX_BLOCKS);
+    this.blocksLev = new Float64Array(SLOW_WINDOW_BLOCKS);
+    this.blockSampleLev = new Float64Array(SLOW_WINDOW_BLOCKS);
+    this.slowWindowSamples = Math.max(1, Math.round(SLOW_WINDOW_SECONDS * sr));
     this.blockWriteLev = 0;
     this.blockCountLev = 0;
     this.integratedEnergyLev = 0;
@@ -519,8 +550,12 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
         // into the delay line before the detector (loudnorm offset
         // topology), ramped per sample within one render quantum. It never
         // moves targetLufs and never enters either loudness measurement.
-        var trimDb = clampNumber(data.gainDb, MIN_GAIN_DB, MAX_GAIN_DB);
-        self.trimTargetDb = Math.round(trimDb * 2) / 2;
+        // SPEC §6: a trim outside −12…+12 dB is IGNORED — the previous trim
+        // is preserved — never clamped. In-range values keep the 0.5 dB
+        // slider step shared with the popup/background.
+        var trimRaw = Number(data.gainDb);
+        if (!Number.isFinite(trimRaw) || trimRaw < MIN_GAIN_DB || trimRaw > MAX_GAIN_DB) return;
+        self.trimTargetDb = Math.round(trimRaw * 2) / 2;
         return;
       }
       if (data.type === 'set-blast-guard') {
@@ -595,6 +630,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.sumShortLev = 0;
     this.sumBlockLev = 0;
     this.blocksLev.fill(0);
+    this.blockSampleLev.fill(0);
     this.blockWriteLev = 0;
     this.blockCountLev = 0;
     this.integratedEnergyLev = 0;
@@ -651,6 +687,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.sumShortLev = 0;
     this.sumBlockLev = 0;
     this.blocksLev.fill(0);
+    this.blockSampleLev.fill(0);
     this.blockWriteLev = 0;
     this.blockCountLev = 0;
     this.integratedEnergyLev = 0;
@@ -738,8 +775,13 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.hasGated = Number.isFinite(this.integratedLufs);
   }
 
-  // Levelled-path twin of recomputeIntegrated: same two-pass gating over the
-  // levelled blocks. The SLOW normalization gain reads ONLY this path.
+  // Levelled-path twin of recomputeIntegrated, over a ROLLING window: only
+  // blocks retained within the last SLOW_WINDOW_SECONDS of elapsed samples
+  // count (AES rolling average, SPEC S4). Stale slots are skipped, never
+  // compacted — the ring recycles them by overwriting the oldest, and order
+  // never matters to a mean. The SLOW normalization gain reads ONLY this
+  // path. Gating (absolute −70 LUFS below, relative −10 LU here) and the
+  // K-weighted measurement are exactly as before.
   recomputeLevelled() {
     if (this.blockCountLev === 0) {
       this.integratedEnergyLev = 0;
@@ -747,14 +789,28 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       this.hasGatedLev = false;
       return;
     }
+    var now = this.totalFrames;
+    var maxAge = this.slowWindowSamples;
     var sum = 0;
+    var absN = 0;
     var i;
-    for (i = 0; i < this.blockCountLev; i++) sum += this.blocksLev[i];
-    var meanAbs = sum / this.blockCountLev;
+    for (i = 0; i < this.blockCountLev; i++) {
+      if (now - this.blockSampleLev[i] > maxAge) continue;
+      sum += this.blocksLev[i];
+      absN++;
+    }
+    if (absN === 0) {
+      this.integratedEnergyLev = 0;
+      this.integratedLufsLev = -Infinity;
+      this.hasGatedLev = false;
+      return;
+    }
+    var meanAbs = sum / absN;
     var relThresh = meanAbs * REL_GATE_FACTOR;
     var sumG = 0;
     var cntG = 0;
     for (i = 0; i < this.blockCountLev; i++) {
+      if (now - this.blockSampleLev[i] > maxAge) continue;
       var e = this.blocksLev[i];
       if (e >= relThresh) {
         sumG += e;
@@ -948,6 +1004,14 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     } else {
       desiredLoudnessDb = 0;
     }
+    // Silence gate (§6: silence holds the last gain, never re-targets): with
+    // no gated program inside the rolling window — startup, post-reset, or a
+    // silence long enough to empty the window — the slow loop holds its last
+    // gain instead of slewing toward unity or toward stale retained history.
+    // (During shorter silences the window still holds program blocks but no
+    // new block is retained, so integratedLufsLev is frozen and the slew
+    // already holds; the AGC branch holds the same way via its own gate.)
+    if (!this.hasGatedLev) desiredLoudnessDb = this.currentLoudnessDb;
 
     var tc;
     if (desiredLoudnessDb > this.currentLoudnessDb) tc = UP_TC_SECONDS;
@@ -1122,15 +1186,23 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
           }
           var blockEnergyLev = this.sumBlockLev / this.blockSize;
           if (blockEnergyLev >= ABS_GATE_ENERGY) {
-            if (this.blockCountLev < MAX_BLOCKS) {
+            // Rolling slow-loop window: the ring holds the last
+            // SLOW_WINDOW_BLOCKS retained blocks (30 s at the 100 ms hop
+            // cadence) and then recycles the oldest; older-than-window blocks
+            // are additionally expired by elapsed-sample stamp in
+            // recomputeLevelled, so sparse retention across silence cannot
+            // pin ancient history in the mean.
+            if (this.blockCountLev < SLOW_WINDOW_BLOCKS) {
               this.blocksLev[this.blockWriteLev] = blockEnergyLev;
+              this.blockSampleLev[this.blockWriteLev] = this.totalFrames;
               this.blockWriteLev++;
-              if (this.blockWriteLev >= MAX_BLOCKS) this.blockWriteLev = 0;
+              if (this.blockWriteLev >= SLOW_WINDOW_BLOCKS) this.blockWriteLev = 0;
               this.blockCountLev++;
             } else {
               this.blocksLev[this.blockWriteLev] = blockEnergyLev;
+              this.blockSampleLev[this.blockWriteLev] = this.totalFrames;
               this.blockWriteLev++;
-              if (this.blockWriteLev >= MAX_BLOCKS) this.blockWriteLev = 0;
+              if (this.blockWriteLev >= SLOW_WINDOW_BLOCKS) this.blockWriteLev = 0;
             }
             this.recomputeLevelled();
           }
