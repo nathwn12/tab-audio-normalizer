@@ -7,7 +7,7 @@
 ## Commands
 - `node tests/shared.test.js` — unit tests; run when touching `shared.js`. Currently 18/18 pass.
 - `npm run typecheck` — `tsc --noEmit` with `checkJs`. Needs `npm install` first (`package.json`/`tsconfig.json` are gitignored local-only). Only root `*.js` + `*.d.ts` are checked; `tests/` excluded, `qa/*.cjs` never typechecked.
-- `node loudness-alignment.cjs` — must exit 0 before any commit that changes `audio/normalizer-worklet.js`, `popup.html`, `README.md` or `CHANGELOG.md`.
+- `node loudness-alignment.cjs` — a **partial tripwire, not a gate**: it catches a changed constant, a changed claim in its three scanned files, and a declared-but-unread constant, but it exits 0 for claims it fails to recognise and for files it does not scan. Do not read exit 0 as proof the numbers agree; its independent verification failed and its redesign is parked (see PR #12).
 - `node qa/extension-qa.cjs` - popup/content-script flow. **BANNED from execution (see Audio Safety).**
 - `node qa/responsive-normalizer-qa.cjs` - AudioWorklet loud/quiet/burst/toggle scenarios. **BANNED from execution (see Audio Safety): launches Chromium and plays audio via a real AudioContext.**
 - QA loads Playwright from hardcoded Scoop path; override with `TN_PLAYWRIGHT_PATH`. `TN_QA_HEADLESS=0` for visible browser (default headless). **Do not run either QA script - see Audio Safety.**
