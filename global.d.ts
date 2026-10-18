@@ -42,10 +42,19 @@ interface TabNormalizerSharedApi {
     hookActive: boolean;
     lastError: string;
   }) => string;
-  storageGet: (keys: string | string[] | Record<string, unknown>) => Promise<Record<string, unknown>>;
-  storageSet: (items: Record<string, unknown>) => Promise<void>;
-  loadSiteState: (siteKey: string) => Promise<boolean | null>;
-  saveSiteState: (siteKey: string, enabled: boolean) => Promise<void>;
+  // NOTE: `saveSiteState` (the whole-map `siteToggles` mirror writer) was
+  // deleted to close the recurrence path. It is deliberately absent here.
+  SITE_KEY_PREFIX: string;
+  siteStorageKey: (siteKey: string) => string;
+  isSiteStorageKey: (key: string) => boolean;
+  siteKeyFromStorageKey: (key: string) => string;
+  normalizeSiteRecord: (value: unknown) => { siteKey?: string; enabled: boolean; gainDb: number; blastGuard: boolean; seq: number; mirror: boolean };
+  migrateLegacyToRecord: (
+    siteSettings: Record<string, unknown>,
+    activeSites: Record<string, unknown>,
+    siteToggles: Record<string, unknown>,
+    hostnameOrSiteKey: string
+  ) => { enabled: boolean; gainDb: number; blastGuard: boolean; seq: number; mirror: boolean } | null;
 
 }
 

@@ -20,14 +20,12 @@
    *   blastGuard: boolean, injected: boolean, hookAlive: boolean,
    *   hookActive: boolean, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
+   *   transient: ({ enabled: boolean, gainDb: number, blastGuard: boolean } | null),
    *   pendingProbe: ({ requestId: string, promise: Promise<boolean>, resolve: (v: boolean) => void, timeoutId: number } | null),
    *   popupProbe: (Promise<boolean> | null),
    *   syncInFlight: boolean, queuedSyncReason: string,
-   *   queuedSyncPayload: (Record<string, unknown> | null),
    *   bootstrapped: boolean, activationRetryTimer: (number | null),
-   *   activationRetryCount: number, spaWatchTimer: (number | null),
-   *   hasSessionOverride: boolean, sessionEnabled: boolean,
-   *   sessionGainDb: number, sessionBlastGuard: boolean
+   *   activationRetryCount: number, spaWatchTimer: (number | null)
    * }} */
   const state = {
     hostname: '',
@@ -42,19 +40,15 @@
     injectStartedAt: 0,
     lastError: '',
     lastStatusAt: 0,
+    transient: null,
     pendingProbe: null,
     popupProbe: null,
     syncInFlight: false,
     queuedSyncReason: '',
-    queuedSyncPayload: null,
     bootstrapped: false,
     activationRetryTimer: null,
     activationRetryCount: 0,
     spaWatchTimer: null,
-    hasSessionOverride: false,
-    sessionEnabled: false,
-    sessionGainDb: contentShared.DEFAULT_GAIN_DB,
-    sessionBlastGuard: contentShared.DEFAULT_BLAST_GUARD,
   };
 
   globalThis.__tabNormalizerContentScriptV5 = {
@@ -81,7 +75,17 @@
     let storageChangeTimer = null;
 
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || (!changes.activeSites && !changes.siteSettings)) return;
+      if (area !== 'local') return;
+      const perKey = state.siteKey ? contentShared.siteStorageKey(state.siteKey) : '';
+      if (!changes.activeSites && !changes.siteSettings && !changes.siteToggles && !(perKey && changes[perKey])) return;
+      // Persisted truth changed. Drop the transient session override
+      // only when this tab's effective config actually changed, so an
+      // unrelated site's save never cuts a transient session short — but the
+      // next storage change for THIS site always clears it, and an ordinary
+      // persisted save then reads storage like any other tab.
+      if (storageChangeAffectsThisSite(changes)) {
+        state.transient = null;
+      }
       if (storageChangeTimer) return;
       storageChangeTimer = setTimeout(() => {
         storageChangeTimer = null;
@@ -104,18 +108,51 @@
         return true;
       }
       if (message?.type === 'CLEAR_SESSION_OVERRIDE') {
-        state.hasSessionOverride = false;
+        state.transient = null;
         scheduleSync('clear-override');
         sendResponse({ ok: true });
         return true;
       }
       if (message?.type === 'TOGGLE_CHANGED') {
-        if (message.enabled) {
-          void handleSetDocumentState(message);
-        } else {
-          cleanupAndReset();
+        // The stored per-site record is the authority. This broadcast is only
+        // a nudge to re-read storage, never a snapshot that outranks it. Guard the
+        // site: tabs.sendMessage reaches every frame (all_frames:true), so a
+        // toggle for page A must never reset an embedded frame from site B.
+        // Finding 3: fail-closed — act only on an exact `siteKey` match and
+        // reject when it is absent. `intendedToggleSite && ...` let an absent
+        // key through to STOP, so disabling page A reset foreign frames.
+        // Finding 2: a delayed disable broadcast must never stop a
+        // re-enabled tab. The disable path re-reads the stored truth first;
+        // when storage says enabled the broadcast is stale and the tab
+        // re-syncs instead of calling cleanupAndReset().
+        const intendedToggleSite = typeof message.siteKey === 'string'
+          ? contentShared.getSiteKey(message.siteKey)
+          : '';
+        if (!intendedToggleSite || intendedToggleSite !== state.siteKey) {
+          sendResponse({ ok: false, error: 'site mismatch' });
+          return true;
         }
-        sendResponse({ ok: true });
+        if (message.enabled) {
+          scheduleSync('toggle-changed');
+          sendResponse({ ok: true });
+          return true;
+        }
+        void (async () => {
+          try {
+            const cfg = await readStoredConfig();
+            if (cfg.enabled) {
+              scheduleSync('toggle-changed-stale-disable');
+            } else {
+              state.transient = null;
+              cleanupAndReset();
+            }
+          } catch {
+            // Fail closed on a read failure: never stop a potentially live
+            // hook on a message alone — re-sync instead.
+            scheduleSync('toggle-changed-read-failed');
+          }
+          sendResponse({ ok: true });
+        })();
         return true;
       }
       return false;
@@ -141,6 +178,94 @@
     });
 
     state.bootstrapped = true;
+  }
+
+  /**
+   * Whether a storage change alters this tab's effective config. A per-site
+   * `site:<key>` change for THIS site counts; missing maps are equal on both
+   * sides, so only a real before/after difference for this siteKey counts
+   * (legacy activeSites merges are evaluated exactly).
+   * @param {Record<string, { oldValue?: unknown, newValue?: unknown }>} changes
+   */
+  function storageChangeAffectsThisSite(changes) {
+    if (!state.siteKey) return true;
+    try {
+      const perKey = contentShared.siteStorageKey(state.siteKey);
+      if (perKey && changes[perKey]) {
+        const oldRec = changes[perKey].oldValue && typeof changes[perKey].oldValue === 'object'
+          ? contentShared.normalizeSiteRecord(changes[perKey].oldValue)
+          : null;
+        const newRec = changes[perKey].newValue && typeof changes[perKey].newValue === 'object'
+          ? contentShared.normalizeSiteRecord(changes[perKey].newValue)
+          : null;
+        if (!oldRec || !newRec) return true;
+        return oldRec.enabled !== newRec.enabled
+          || oldRec.gainDb !== newRec.gainDb
+          || oldRec.blastGuard !== newRec.blastGuard;
+      }
+      // Legacy fallback: evaluate the effective config (settings + actives
+      // + toggles, all normalised) on both sides. A `siteToggles` change for
+      // THIS site counts exactly like a settings/active change.
+      if (!changes.siteSettings && !changes.activeSites && !changes.siteToggles) return false;
+      const oldSettings = changes.siteSettings ? (changes.siteSettings.oldValue || {}) : {};
+      const newSettings = changes.siteSettings ? (changes.siteSettings.newValue || {}) : {};
+      const oldActive = changes.activeSites ? (changes.activeSites.oldValue || {}) : {};
+      const newActive = changes.activeSites ? (changes.activeSites.newValue || {}) : {};
+      const oldToggles = changes.siteToggles ? (changes.siteToggles.oldValue || {}) : {};
+      const newToggles = changes.siteToggles ? (changes.siteToggles.newValue || {}) : {};
+      const oldMig = contentShared.migrateLegacyToRecord(oldSettings, oldActive, oldToggles, state.siteKey);
+      const newMig = contentShared.migrateLegacyToRecord(newSettings, newActive, newToggles, state.siteKey);
+      if (oldMig || newMig) {
+        const o = oldMig || { enabled: false, gainDb: 0, blastGuard: false };
+        const n = newMig || { enabled: false, gainDb: 0, blastGuard: false };
+        return o.enabled !== n.enabled || o.gainDb !== n.gainDb || o.blastGuard !== n.blastGuard;
+      }
+      const oldConfig = contentShared.getSiteConfig(oldSettings, oldActive, state.siteKey);
+      const newConfig = contentShared.getSiteConfig(newSettings, newActive, state.siteKey);
+      return oldConfig.enabled !== newConfig.enabled
+        || oldConfig.gainDb !== newConfig.gainDb
+        || oldConfig.blastGuard !== newConfig.blastGuard;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Read this tab's effective stored config: the per-site `site:<key>` record
+   * is the authority; legacy `siteSettings`/`activeSites` (+ explicit
+   * `siteToggles` when present via the background migration) are the fallback
+   * for data written before the per-site keys existed. Read-only: this file
+   * performs NO storage write.
+   * @returns {Promise<{ enabled: boolean, gainDb: number, blastGuard: boolean }>}
+   */
+  async function readStoredConfig() {
+    const perKey = contentShared.siteStorageKey(state.siteKey);
+    // Platform fact (measured Step 1 repro): an object-form `undefined`
+    // default is dropped by the extension API's JSON marshal, so
+    // `get({ [perKey]: undefined })` returns `{}` even when the key exists.
+    // The array form is proven to return the value. Missing keys are simply
+    // absent; the callees below tolerate undefined legacy maps.
+    /** @type {string[]} */
+    const keys = ['activeSites', 'siteSettings', 'siteToggles'];
+    if (perKey) keys.push(perKey);
+    const stored = await chrome.storage.local.get(keys);
+    const perValue = perKey ? stored[perKey] : undefined;
+    if (perValue && typeof perValue === 'object') {
+      const rec = contentShared.normalizeSiteRecord(perValue);
+      return { enabled: rec.enabled, gainDb: rec.gainDb, blastGuard: rec.blastGuard };
+    }
+    // Lossless legacy fallback: normalise every legacy shape (settings,
+    // actives AND toggles) before matching, so a `www.`-only entry is found
+    // from the canonical key. Read-only — persistence belongs to the
+    // background single writer.
+    const migrated = contentShared.migrateLegacyToRecord(
+      stored.siteSettings, stored.activeSites, stored.siteToggles, state.siteKey,
+    );
+    if (migrated) {
+      return { enabled: migrated.enabled, gainDb: migrated.gainDb, blastGuard: migrated.blastGuard };
+    }
+    const config = contentShared.getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
+    return { enabled: config.enabled, gainDb: config.gainDb, blastGuard: config.blastGuard };
   }
 
   function startSpaWatch() {
@@ -175,16 +300,14 @@
 
   /**
    * @param {string} reason
-   * @param {Record<string, unknown>|null} [payload]
    */
-  function scheduleSync(reason, payload = null) {
+  function scheduleSync(reason) {
     if (state.syncInFlight) {
       state.queuedSyncReason = reason;
-      state.queuedSyncPayload = payload;
       return;
     }
 
-    void sync(reason, payload);
+    void sync(reason);
   }
 
   function clearActivationRetry() {
@@ -224,22 +347,100 @@
   }
 
   async function handleSetDocumentState(message) {
-    const keepGainDb = state.hasSessionOverride ? state.sessionGainDb : state.gainDb;
-    const keepBlastGuard = state.hasSessionOverride ? state.sessionBlastGuard : state.blastGuard;
-    state.hasSessionOverride = true;
-    state.sessionEnabled = Boolean(message.enabled);
-    state.sessionGainDb = message.gainDb === undefined ? keepGainDb : contentShared.clampGainDb(message.gainDb);
-    state.sessionBlastGuard = message.blastGuard === undefined ? keepBlastGuard : Boolean(message.blastGuard);
-    scheduleSync('session-override', {
-      enabled: state.sessionEnabled,
-      gainDb: state.sessionGainDb,
-      blastGuard: state.sessionBlastGuard,
-    });
+    // Single-writer rule: persistence lives only in background.js
+    // (SET_SITE_STATE -> per-site `site:<key>`). This tab message is
+    // read-only: it applies state to the live document and never writes
+    // storage (zero `chrome.storage.local.set` calls are reachable from this
+    // path; no migration write exists anywhere in this file).
+    // Explicit site guard: a popup action names the site it is showing and a
+    // frame ignores a mismatched key, so disabling page A can never disable
+    // an embedded cross-origin iframe from site B. Fail-closed — only an
+    // exact `siteKey` match applies; a matching `hostname` alone is rejected.
+    const intendedSite = typeof message?.siteKey === 'string'
+      ? contentShared.getSiteKey(message.siteKey)
+      : '';
+    if (!intendedSite || intendedSite !== state.siteKey) {
+      return { ok: false, error: 'site mismatch' };
+    }
+    // Genuine transient session state — the background flags its
+    // pending-session apply with `transient: true` (`persist: false` is
+    // accepted for the same contract). ONLY a flagged request installs the
+    // session override: an ordinary persisted save arrives
+    // unflagged and must leave this document reading storage like any other
+    // tab, never installing a snapshot that later storage changes cannot
+    // dislodge. A transient DISABLE installs the override too:
+    // enabled:false outranks stored enabled:true for this tab's lifetime, and
+    // only the next storage change for this site clears it.
+    const isTransient = message.transient === true || message.persist === false;
+    if (!isTransient) {
+      state.transient = null;
+      await sync('document-state');
+      return { ok: true };
+    }
+    // Transient path: apply the message's fields to the live document without
+    // touching storage. Missing fields fall back to stored defaults via a
+    // single read; nothing is persisted.
+    const base = await readStoredConfig();
+    const enabled = Object.prototype.hasOwnProperty.call(message, 'enabled')
+      ? Boolean(message.enabled)
+      : base.enabled;
+    const gainDb = Object.prototype.hasOwnProperty.call(message, 'gainDb')
+      ? contentShared.clampGainDb(message.gainDb)
+      : base.gainDb;
+    const blastGuard = Object.prototype.hasOwnProperty.call(message, 'blastGuard')
+      ? Boolean(message.blastGuard)
+      : base.blastGuard;
+    state.transient = { enabled, gainDb, blastGuard };
+    state.enabled = enabled;
+    state.gainDb = gainDb;
+    state.blastGuard = blastGuard;
+
+    console.log('[cs] document-state (transient):', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'blastGuard:', blastGuard);
+
+    const hookAlive = await evaluateHookHealth();
+    const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
+
+    if (action === 'inject') {
+      setPendingStart();
+      inject();
+      scheduleActivationRetry('document-state');
+      startSpaWatch();
+      return { ok: true };
+    }
+
+    if (action === 'start') {
+      setPendingStart();
+      postToPage('START', { reason: 'document-state', gainDb, blastGuard });
+      postToPage('SET_GAIN', { gainDb });
+      postToPage('SET_BLAST_GUARD', { blastGuard });
+      scheduleActivationRetry('document-state');
+      startSpaWatch();
+      console.log('[cs] sent START to hook');
+      return { ok: true };
+    }
+
+    if (action === 'stop') {
+      clearPendingStart();
+      clearActivationRetry();
+      stopSpaWatch();
+      postToPage('STOP', { reason: 'document-state' });
+      state.hookActive = false;
+      state.hookAlive = false;
+      state.lastError = '';
+      return { ok: true };
+    }
+
+    clearPendingStart();
+    if (state.injected) {
+      startSpaWatch();
+      postToPage('SET_GAIN', { gainDb });
+      postToPage('SET_BLAST_GUARD', { blastGuard });
+      scheduleActivationRetry('document-state');
+    }
     return { ok: true };
   }
 
   function cleanupAndReset() {
-    state.hasSessionOverride = false;
     clearPendingStart();
     clearActivationRetry();
     stopSpaWatch();
@@ -261,9 +462,8 @@
 
   /**
    * @param {string} reason
-   * @param {Record<string, unknown>|null} [payload]
    */
-  async function sync(reason, payload = null) {
+  async function sync(reason) {
     refreshLocationState();
     if (!state.siteKey) {
       clearPendingStart();
@@ -278,43 +478,28 @@
 
     if (state.syncInFlight) {
       state.queuedSyncReason = reason;
-      state.queuedSyncPayload = payload;
       return;
     }
 
     state.syncInFlight = true;
 
     try {
-      let enabled, gainDb, blastGuard;
-
-      if (payload && typeof payload.enabled === 'boolean') {
-        enabled = payload.enabled;
-        gainDb = contentShared.clampGainDb(payload.gainDb);
-        blastGuard = Boolean(payload.blastGuard);
-      } else if (state.hasSessionOverride) {
-        enabled = state.sessionEnabled;
-        gainDb = state.sessionGainDb;
-        blastGuard = state.sessionBlastGuard;
-      } else {
-        const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
-        const siteSettings = contentShared.migrateSiteSettings(stored.siteSettings, stored.activeSites);
-        const config = contentShared.getSiteConfig(siteSettings, {}, state.siteKey);
-        enabled = config.enabled;
-        gainDb = config.gainDb;
-        blastGuard = config.blastGuard;
-
-        const shouldPersistMigration = Object.keys(stored.activeSites || {}).length > 0 ||
-          JSON.stringify(siteSettings) !== JSON.stringify(stored.siteSettings || {});
-        if (shouldPersistMigration) {
-          await chrome.storage.local.set({ activeSites: {}, siteSettings });
-        }
-      }
+      // The per-site `site:<key>` record is the single authority; legacy maps
+      // are the read fallback. This file performs NO storage write — migration
+      // persistence belongs to the background's single writer; this context
+      // only reads.
+      const config = await readStoredConfig();
+      // Finding 7: an active transient session override outranks stored
+      // settings for the live document until cleared (disable/clear-override).
+      const enabled = state.transient ? state.transient.enabled : config.enabled;
+      const gainDb = state.transient ? state.transient.gainDb : config.gainDb;
+      const blastGuard = state.transient ? state.transient.blastGuard : config.blastGuard;
 
       state.enabled = enabled;
       state.gainDb = gainDb;
       state.blastGuard = blastGuard;
 
-      console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'blastGuard:', blastGuard, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason, 'session:', state.hasSessionOverride);
+      console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'blastGuard:', blastGuard, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason);
 
       const hookAlive = enabled ? await evaluateHookHealth() : state.hookAlive;
       const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
@@ -367,10 +552,8 @@
       state.syncInFlight = false;
       if (state.queuedSyncReason) {
         const nextReason = state.queuedSyncReason;
-        const nextPayload = state.queuedSyncPayload;
         state.queuedSyncReason = '';
-        state.queuedSyncPayload = null;
-        void sync(nextReason, nextPayload);
+        void sync(nextReason);
       }
     }
   }
@@ -534,18 +717,21 @@
   }
 
   async function getEffectiveDocumentState() {
-    let enabled, gainDb, blastGuard;
-    if (state.hasSessionOverride) {
-      enabled = state.sessionEnabled;
-      gainDb = state.sessionGainDb;
-      blastGuard = state.sessionBlastGuard;
-    } else {
-      const stored = await chrome.storage.local.get({ activeSites: {}, siteSettings: {} });
-      const config = contentShared.getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
-      enabled = config.enabled;
-      gainDb = config.gainDb;
-      blastGuard = config.blastGuard;
+    // A transient session override outranks stored settings for the live
+    // document until cleared. The per-site record stays the persistence
+    // authority; the transient only shapes what this tab applies and reports.
+    if (state.transient) {
+      state.enabled = state.transient.enabled;
+      state.gainDb = state.transient.gainDb;
+      state.blastGuard = state.transient.blastGuard;
+      return { ...state.transient };
     }
+    // The per-site record is the single authority (legacy maps are the
+    // read fallback). No session snapshot outranks it.
+    const config = await readStoredConfig();
+    const enabled = config.enabled;
+    const gainDb = config.gainDb;
+    const blastGuard = config.blastGuard;
 
     state.enabled = enabled;
     state.gainDb = gainDb;

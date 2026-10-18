@@ -20,15 +20,72 @@ const PRESETS = {
 let hostname = '';
 let siteKey = '';
 let tabId = null;
-let statusTimer = null;
 let hookWasActiveAt = 0;
 let lastHookActive = false;
-let saveGainTimer = null;
 let statusRequestToken = 0;
 let runtimeActivationState = 'idle';
 let runtimeActivationMessage = '';
 let softWakePromise = null;
 const ACTIVE_STALE_MS = 3000;
+
+// Single owner: the background owns persisted state and applies intents.
+// This popup sends field-level intents (`set` with ONLY the changed field)
+// with no timestamps and no ordering token. Dispatch is immediate with no
+// in-memory queue. Ordering is last-accepted-write-wins: the background
+// applies an intent's fields to the live record, writes the whole record
+// back in one `set`, bumps the per-site `seq` audit counter (observability
+// only, never a gate), and returns the stored truth. Nothing is ever
+// rejected on ordering grounds. Accepted trade (deliberate): if two popups
+// race the same field and one message is delayed past a newer one, the later
+// *arrival* wins rather than the later action; there is no clock-free way to
+// distinguish those, the window is milliseconds between two
+// simultaneously-open popups, and the wall-clock alternative locked a field
+// out until the clock caught up. The popup always renders what the
+// background returned, never what it sent; a response missing the stored
+// truth is a failure, not a success.
+// No `unload` flush: every change is already sent on its `change`/
+// `input` event (RESEARCH §6: the popup document is unloaded on close with no
+// flush facility).
+
+/**
+ * Require the background's stored truth. The popup renders what the
+ * background returned, never what it sent: a response missing the stored
+ * fields is a failure, not a success.
+ * @param {unknown} res
+ */
+function requireStoredTruth(res) {
+  if (!res || typeof res !== 'object') throw new Error('save failed: no stored truth');
+  const r = /** @type {Record<string, unknown>} */ (res);
+  if (r.ok === false) throw new Error(String(r.error || 'save failed'));
+  if (typeof r.enabled !== 'boolean'
+    || typeof r.blastGuard !== 'boolean'
+    || !Number.isFinite(Number(r.gainDb))) {
+    throw new Error('save failed: response carries no stored truth');
+  }
+  return r;
+}
+
+/**
+ * Re-read the stored truth and apply it to the controls.
+ * Rejects when the background does not report ok so callers
+ * never mistake a failed read for the stored truth.
+ * @returns {Promise<Record<string, unknown> | null>}
+ */
+async function revertToStoredTruth() {
+  const state = await chrome.runtime.sendMessage({ type: 'GET_SITE_STATE', hostname: siteKey });
+  if (!state || state.ok !== true) {
+    throw new Error(String((state && state.error) || 'read failed'));
+  }
+  applyControlState({ enabled: state.enabled, gainDb: state.gainDb, blastGuard: state.blastGuard });
+  return state;
+}
+
+/**
+ * @param {string} text
+ */
+function reportWriteError(text) {
+  renderStatus({ indicator: 'red', text });
+}
 
 void init();
 
@@ -45,7 +102,13 @@ gainSlider.addEventListener('input', () => {
   const gainDb = popupShared.clampGainDb(gainSlider.value);
   gainSlider.value = String(gainDb);
   renderGain(gainDb);
-  queueGainSave(gainDb);
+  // Immediate dispatch: no debounce queue, no `unload` flush, no popup-side
+  // chain. RESEARCH §6: the popup document is unloaded on close with no
+  // documented flush facility, so any queued-but-unwritten value would be
+  // lost. Each input sends its own field-level intent at once; the
+  // background applies it on arrival (last-accepted-write-wins) and returns
+  // the stored truth, which the popup renders.
+  void saveGainInner(gainDb);
 });
 
 gainSlider.addEventListener('pointerdown', () => {
@@ -57,8 +120,10 @@ resetBtnEl.addEventListener('click', () => {
   gainSlider.value = '0';
   blastGuardToggle.checked = false;
   renderGain(0);
-  saveGain(0);
-  saveBlastGuard(false);
+  // Reset is ONE logical update — gain 0 + Blast Guard off in a SINGLE
+  // field-level intent and a SINGLE per-site storage write. Two separate
+  // writes would leave a crash/close window between them.
+  void saveResetInner();
 });
 
 presetButtons.forEach((button) => {
@@ -95,13 +160,10 @@ async function init() {
 
     hostnameEl.textContent = hostname;
 
-    const savedToggle = await popupShared.loadSiteState(siteKey);
-    const initialState = savedToggle !== null ? savedToggle : false;
-
     const state = await chrome.runtime.sendMessage({ type: 'GET_SITE_STATE', hostname: siteKey });
 
-    // Authority first: the siteToggles mirror can diverge from stored settings.
-    toggle.checked = state ? Boolean(state.enabled) : initialState;
+    // Authority first: the stored per-site record is the truth.
+    toggle.checked = state ? Boolean(state.enabled) : false;
     gainSlider.value = String(popupShared.clampGainDb(state?.gainDb));
     blastGuardToggle.checked = Boolean(state?.blastGuard);
     renderGain(gainSlider.value);
@@ -116,7 +178,7 @@ async function init() {
       renderStatus({ indicator: 'gray', text: 'Off for this site.' });
     }
 
-    statusTimer = setInterval(() => {
+    setInterval(() => {
       void refreshDocumentStatus();
     }, 750);
   } catch {
@@ -134,6 +196,7 @@ function disableAll(statusText) {
 }
 
 
+
 async function toggleSite() {
   if (!siteKey) {
     toggle.checked = !toggle.checked;
@@ -145,44 +208,58 @@ async function toggleSite() {
     runtimeActivationMessage = '';
     lastHookActive = false;
     hookWasActiveAt = 0;
-    if (saveGainTimer) {
-      clearTimeout(saveGainTimer);
-      saveGainTimer = null;
-    }
   }
 
   toggle.disabled = true;
   syncGainControlState();
   syncBlastGuardControlState();
 
+  const wanted = toggle.checked;
   try {
-    await popupShared.saveSiteState(siteKey, toggle.checked);
+    // Field-level intent: ONLY the toggled field. Never send gainDb /
+    // Blast Guard from a cache — a concurrent sibling popup may have
+    // changed them newer, and a snapshot would revert them. Dispatched
+    // immediately with no popup-side chain; the background applies on
+    // arrival (last-accepted-write-wins) and returns the stored truth.
+    const res = await chrome.runtime.sendMessage({
+      type: 'SET_SITE_STATE',
+      siteKey,
+      tabId,
+      set: { enabled: wanted },
+    });
+    requireStoredTruth(res);
+    // Render what the background returned, never what was sent.
+    applyControlState({ enabled: res.enabled, gainDb: res.gainDb, blastGuard: res.blastGuard });
 
-    if (toggle.checked) {
+    if (res.enabled) {
       runtimeActivationState = 'pending';
       runtimeActivationMessage = 'Enabling on this tab…';
       renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
-      await chrome.runtime.sendMessage({
-        type: 'SET_SITE_STATE',
-        siteKey,
-        tabId,
-        enabled: toggle.checked,
-        gainDb: popupShared.clampGainDb(gainSlider.value),
-        blastGuard: blastGuardToggle.checked,
-      });
     } else {
+      // Immediate apply for the current tab's TOP FRAME ONLY (frameId 0:
+      // RESEARCH §5.3). The named siteKey keeps every other frame from
+      // acting on this as defence in depth.
       if (tabId) {
         await chrome.tabs.sendMessage(tabId, {
           type: 'SET_DOCUMENT_STATE',
+          siteKey,
           enabled: false,
-          gainDb: popupShared.clampGainDb(gainSlider.value),
-          blastGuard: blastGuardToggle.checked,
-        }).catch(() => {});
+        }, { frameId: 0 }).catch(() => {});
       }
     }
     await refreshDocumentStatus();
   } catch {
-    toggle.checked = !toggle.checked;
+    // A failed write must not look like a success: revert the control to
+    // the stored truth and surface it on the existing status line. If the
+    // recovery read itself failed, the state is UNKNOWN — never claim a
+    // revert that never happened.
+    let reverted = false;
+    try {
+      await revertToStoredTruth();
+      reverted = true;
+    } catch {}
+    await refreshDocumentStatus();
+    reportWriteError(reverted ? 'Could not save. Reverted.' : 'Could not save. State unknown — reopen the popup and try again.');
   } finally {
     toggle.disabled = false;
     syncGainControlState();
@@ -193,61 +270,122 @@ async function toggleSite() {
 
 
 
-function queueGainSave(gainDb) {
-  if (!siteKey || !toggle.checked || gainSlider.disabled) return;
-  if (saveGainTimer) clearTimeout(saveGainTimer);
-  saveGainTimer = setTimeout(() => {
-    saveGainTimer = null;
-    void saveGain(gainDb);
-  }, 120);
+async function saveGainInner(gainDb) {
+  if (!toggle.checked) return;
+  const wantedGain = popupShared.clampGainDb(gainDb);
+  try {
+    // Field-level intent: ONLY gainDb. Never send enabled / Blast Guard
+    // from this popup's cache — a sibling popup may own newer values.
+    // The background applies on arrival and returns the stored truth.
+    const res = await chrome.runtime.sendMessage({
+      type: 'SET_SITE_STATE',
+      siteKey,
+      tabId,
+      set: { gainDb: wantedGain },
+    });
+    requireStoredTruth(res);
+    // Render the returned truth, never the sent value.
+    const nextGain = popupShared.clampGainDb(res.gainDb);
+    gainSlider.value = String(nextGain);
+    renderGain(nextGain);
+    if (tabId) {
+      await chrome.tabs.sendMessage(tabId, {
+        type: 'SET_DOCUMENT_STATE',
+        siteKey,
+        enabled: toggle.checked,
+        gainDb: nextGain,
+      }, { frameId: 0 }).catch(() => {});
+    }
+  } catch {
+    let reverted = false;
+    try {
+      await revertToStoredTruth();
+      reverted = true;
+    } catch {}
+    reportWriteError(reverted ? 'Could not save gain. Reverted.' : 'Could not save gain. State unknown — reopen the popup and try again.');
+  }
 }
 
-async function saveGain(gainDb) {
+async function saveBlastGuard(blastGuard) {
+  if (!toggle.checked || blastGuardToggle.disabled) return;
+  return saveBlastGuardInner(blastGuard);
+}
+
+async function saveBlastGuardInner(blastGuard) {
+  if (!toggle.checked || blastGuardToggle.disabled) return;
+  const previous = blastGuardToggle.checked;
+  try {
+    // Field-level intent: ONLY blastGuard. Render the returned truth.
+    const res = await chrome.runtime.sendMessage({
+      type: 'SET_SITE_STATE',
+      siteKey,
+      tabId,
+      set: { blastGuard },
+    });
+    requireStoredTruth(res);
+    blastGuardToggle.checked = Boolean(res.blastGuard);
+    if (tabId) {
+      const gainDb = popupShared.clampGainDb(gainSlider.value);
+      await chrome.tabs.sendMessage(tabId, {
+        type: 'SET_DOCUMENT_STATE',
+        siteKey,
+        enabled: toggle.checked,
+        gainDb,
+        blastGuard: Boolean(res.blastGuard),
+      }, { frameId: 0 }).catch(() => {});
+    }
+  } catch {
+    blastGuardToggle.checked = previous;
+    let reverted = false;
+    try {
+      await revertToStoredTruth();
+      reverted = true;
+    } catch {}
+    reportWriteError(reverted ? 'Could not save Blast Guard. Reverted.' : 'Could not save Blast Guard. State unknown — reopen the popup and try again.');
+  }
+}
+
+/**
+ * Reset both gain and Blast Guard in ONE message / ONE storage write.
+ * Field-level: ONLY the two fields the reset touches — never `enabled`.
+ * The two fields apply together and the popup renders the returned truth,
+ * never the sent 0/false.
+ */
+async function saveResetInner() {
   if (!toggle.checked) return;
   try {
     const res = await chrome.runtime.sendMessage({
       type: 'SET_SITE_STATE',
       siteKey,
       tabId,
-      gainDb,
-      blastGuard: blastGuardToggle.checked,
+      set: { gainDb: 0, blastGuard: false },
     });
-    const nextGain = popupShared.clampGainDb(res?.gainDb);
+    requireStoredTruth(res);
+    // Render the returned truth, never the sent values: if the background
+    // stored something else, acknowledging 0/false would claim a change
+    // that never happened.
+    const nextGain = popupShared.clampGainDb(res.gainDb);
+    const nextGuard = Boolean(res.blastGuard);
     gainSlider.value = String(nextGain);
-    blastGuardToggle.checked = Boolean(res?.blastGuard);
+    blastGuardToggle.checked = nextGuard;
     renderGain(nextGain);
     if (tabId) {
       await chrome.tabs.sendMessage(tabId, {
         type: 'SET_DOCUMENT_STATE',
+        siteKey,
         enabled: toggle.checked,
         gainDb: nextGain,
-        blastGuard: blastGuardToggle.checked,
-      }).catch(() => {});
+        blastGuard: nextGuard,
+      }, { frameId: 0 }).catch(() => {});
     }
-  } catch {}
-}
-
-async function saveBlastGuard(blastGuard) {
-  if (!toggle.checked || blastGuardToggle.disabled) return;
-  try {
-    const res = await chrome.runtime.sendMessage({
-      type: 'SET_SITE_STATE',
-      siteKey,
-      tabId,
-      blastGuard,
-      gainDb: popupShared.clampGainDb(gainSlider.value),
-    });
-    blastGuardToggle.checked = Boolean(res?.blastGuard);
-    if (tabId) {
-      const gainDb = popupShared.clampGainDb(gainSlider.value);
-      await chrome.tabs.sendMessage(tabId, {
-        type: 'SET_DOCUMENT_STATE',
-        enabled: toggle.checked,
-        gainDb,
-        blastGuard: Boolean(res?.blastGuard),
-      }).catch(() => {});
-    }
-  } catch {}
+  } catch {
+    let reverted = false;
+    try {
+      await revertToStoredTruth();
+      reverted = true;
+    } catch {}
+    reportWriteError(reverted ? 'Could not save. Reverted.' : 'Could not save. State unknown — reopen the popup and try again.');
+  }
 }
 
 async function requestSliderSoftWake() {
@@ -285,7 +423,9 @@ function applyPreset(gainDb) {
   const nextGain = popupShared.clampGainDb(gainDb);
   gainSlider.value = String(nextGain);
   renderGain(nextGain);
-  queueGainSave(nextGain);
+  // Immediate persist (no debounce, no chain): the preset click IS the
+  // user's change event and dispatches its own field-level intent at once.
+  void saveGainInner(nextGain);
 }
 
 async function refreshDocumentStatus() {
@@ -309,8 +449,18 @@ async function refreshDocumentStatus() {
   }
 
   try {
-    const doc = await chrome.tabs.sendMessage(tabId, { type: 'GET_DOCUMENT_STATUS' });
+    // Defect 1: target the TOP FRAME ONLY. Without frameId the message fires
+    // in every frame (RESEARCH §5.1) and the sender gets one arbitrary answer
+    // (RESEARCH §5.2: "one of answers"), so an embedded cross-origin iframe's
+    // state could overwrite the selected site's controls. frameId 0 is the
+    // documented main-frame id (RESEARCH §5.3) and needs no new permission.
+    const doc = await chrome.tabs.sendMessage(tabId, { type: 'GET_DOCUMENT_STATUS' }, { frameId: 0 });
     if (requestToken !== statusRequestToken) return;
+    // Defence in depth: the content script names its siteKey; a reply that
+    // does not name THIS site (a non-top frame's answer, a stale tab) must
+    // never overwrite the popup's controls.
+    const docSite = typeof doc?.siteKey === 'string' ? popupShared.getSiteKey(doc.siteKey) : '';
+    if (!docSite || docSite !== siteKey) return;
     const enabled = Boolean(doc?.enabled);
     const hookAlive = Boolean(doc?.hookAlive);
     const hookActive = Boolean(doc?.hookActive);
@@ -427,7 +577,7 @@ function syncPresetControlState() {
   }
 }
 
-window.addEventListener('unload', () => {
-  if (statusTimer) clearInterval(statusTimer);
-  if (saveGainTimer) clearTimeout(saveGainTimer);
-});
+// No `unload` handler by design (defect 3): every user change is persisted
+// immediately on its `change`/`input` event, so there is never pending work
+// for teardown to flush. RESEARCH §6 documents no flush-on-teardown facility
+// and warns async teardown work is not guaranteed to complete.
