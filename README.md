@@ -1,6 +1,8 @@
-# Tab Audio Normalizer
-
-**Keep every site at one comfortable loudness in Chrome and Brave.**
+<p align="center">
+  <img src="audio/icon-128.png" width="120" height="120" alt="Tab Audio Normalizer icon" />
+</p>
+<h1 align="center">Tab Audio Normalizer</h1>
+<p align="center"><strong>Keep every site at one comfortable loudness in Chrome and Brave.</strong></p>
 
 ## Install
 
@@ -52,3 +54,11 @@ Open a page that plays audio and click the extension icon. The popup names the c
 - Privacy policy: [PRIVACY_POLICY.md](PRIVACY_POLICY.md)
 - Release history: [CHANGELOG.md](CHANGELOG.md)
 - License: [LICENSE](LICENSE) (MIT)
+
+<!-- nathwn12 house footer: identical in every repo. Do not edit. -->
+<p align="center">
+  <a href="https://github.com/nathwn12"><img src="assets/signature.svg" width="96" alt="nathwn12" /></a>
+</p>
+<p align="center">
+  <sub>Built by <a href="https://github.com/nathwn12">nathwn12</a> · <a href="https://github.com/nathwn12?tab=repositories">All projects</a></sub>
+</p>
