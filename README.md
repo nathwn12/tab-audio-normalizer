@@ -14,14 +14,6 @@ Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacke
 
 Once loaded, the extension measures the loudness of the sites you activate and moves each one toward its -20 LUFS program target and levels loud and quiet passages within each program instead of leaving loud and quiet tabs far apart. It adjusts tab audio gain locally in your browser; it asks for `storage`, `tabs`, `scripting`, plus read access to `http`/`https` pages so it can process their audio.
 
-### Or let your AI install it
-
-```
-Clone nathwn12/tab-audio-normalizer and load it unpacked in Chrome: open chrome://extensions, enable Developer mode, click Load unpacked, and select the folder containing manifest.json.
-Then open a page with audio, click the extension icon, switch Active on, and confirm the popup shows that page's hostname.
-Reply with the extension version from manifest.json and the hostname you tested.
-```
-
 ### Offline or pinned
 
 There is no build step, so the checked-out folder is the extension. To pin an exact copy:
