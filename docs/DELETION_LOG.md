@@ -112,3 +112,32 @@
 - Unit tests (`node tests/shared.test.js`, `node tests/setting-loss.test.js`): all pass (38/38 setting-loss incl. the new sequence test)
 - Loudness harness (`node qa/loudness-verify.cjs`): OVERALL ALL PASS (incl. new TRANSITION + TELEMETRY rows)
 - No runtime behavior changed except the intended Finding 1/2 fixes (mode-switch reset, output-aligned telemetry) covered by their own regression rows — the three Finding 5 removals are behaviour-preserving
+
+## [2026-10-19] Release 5.4.1 — Blast Guard removal (owner-directed)
+
+### Deleted per file
+- `popup.html`: the `#blast-guard` toggle markup and label; the "Blast Guard adds stricter peak protection." sentence in the mode note.
+- `popup.js`: `blastGuardToggle`, its `change` listener, `saveBlastGuard` / `saveBlastGuardInner`, `syncBlastGuardControlState`, the `blastGuard` branches in `applyControlState` / `requireStoredTruth` / `disableAll` / `refreshDocumentStatus`, the reset intent's `blastGuard: false` (reset is now a single-field `gainDb: 0` intent), and the two "Could not save Blast Guard" error strings.
+- `shared.js`: `DEFAULT_BLAST_GUARD`; `blastGuard` in `normalizeSiteRecord` and the `migrateLegacyToRecord` defaults. The record is now `{ enabled, gainDb, seq, mirror }`.
+- `background.js`: the `blastGuard` record field (schema JSDoc, sanitize/persist paths), legacy-intent extraction of `message.blastGuard`, and the migration/reconcile comparisons that included it.
+- `content-script.js`: `state.blastGuard`, the `SET_BLAST_GUARD` posts (START payload, sync, transient), and the `blastGuard` comparisons/fallbacks.
+- `page-hook.js`: `state.blastGuard`, the `SET_BLAST_GUARD` route, `setBlastGuard`, `updateSessionBlastGuard(s)`, and the `set-blast-guard` post to the worklet.
+- `audio/normalizer-worklet.js`: the `set-blast-guard` inbound; `BLAST_GUARD_MAX_BOOST_DB` / `BLAST_GUARD_MAX_CUT_DB` / `BLAST_GUARD_DOWN_TC_SECONDS` / `BLAST_GUARD_CEILING_DB` / `BLAST_GUARD_CEILING_LINEAR` / `BLAST_GUARD_LIMITER_RELEASE_SECONDS` / `BLAST_GUARD_LIMITER_HOLD_SECONDS`; `this.blastGuard`, `blastGuardReleaseCoeff`, `blastGuardHoldFrames`, `blastHoldRemaining`; and every blastGuard branch site (ceiling choice, AGC boost/cut clamp, release-constant choice, limiter hold). The −2 dBTP ceiling and its clamps/release/hold are gone; the single −1 dBTP ceiling remains.
+- `global.d.ts`: `DEFAULT_BLAST_GUARD` and the `blastGuard` fields on the site-record JSDoc types.
+- `qa/loudness-verify.cjs`: the Blast Guard scenario rows, render variants, `blastClampVerdict`, and the "BLAST GUARD" constants/table (the release gate now exercises the single ceiling only).
+
+### Legacy-read behavior
+- Legacy per-site records that still carry `blastGuard` read cleanly: `normalizeSiteRecord` builds `{ enabled, gainDb, seq, mirror }` from the raw value and ignores unknown fields, and the background's whole-record read-modify-write drops `blastGuard` on the next write. Legacy messages carrying `blastGuard` are ignored by `extractIntentSet` (it reads only `enabled` / `gainDb`).
+
+### Impact
+- Files modified: 10 tracked (`audio/normalizer-worklet.js`, `background.js`, `content-script.js`, `global.d.ts`, `manifest.json`, `page-hook.js`, `popup.html`, `popup.js`, `qa/loudness-verify.cjs`, `shared.js`); 8 carry Blast Guard deletions, the other 2 are `manifest.json` (version 5.4.1) and the tracked acceptance harness.
+- Removed surface: one popup control, one record field, one hook message type, one worklet inbound, one ceiling — no replacement.
+
+### Verification
+- Silent harnesses (rerun by the release): `node qa/loudness-verify.cjs`, `node qa/hook-guard-silent.cjs`
+- Unit tests (rerun by the release): `node tests/shared.test.js`, `node tests/setting-loss.test.js`
+- Typecheck (rerun by the release): `npm run typecheck`
+- Audio Safety: no browser launched, no audio playback — the banned browser harnesses (`qa/extension-qa.cjs`, `qa/responsive-normalizer-qa.cjs`, `qa/worklet-equivalence-qa.cjs`) were not run.
+
+### Notes
+- Untracked harnesses left as-is: `qa/responsive-normalizer-qa.cjs` and `qa/worklet-equivalence-qa.cjs` (both banned from execution, both untracked) still contain Blast Guard scenario code, and the untracked silent analysis scripts (`qa/worklet-silent-analysis.cjs`, `qa/proof-*.cjs`) still name Blast Guard. None is a release gate.

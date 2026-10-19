@@ -8,6 +8,7 @@
   const PENDING_ATTR = 'data-tab-normalizer-pending';
   const RECOVERY_BURST_MS = 250;
   const RECOVERY_BURST_COUNT = 6;
+  const HOOK_GUARD_TIMEOUT_MS = 1500;
   const WORKLET_URL = document.documentElement?.getAttribute('data-tn-worklet-url')
     || new URL(
       'audio/normalizer-worklet.js',
@@ -27,10 +28,11 @@
   const contextSessions = new WeakMap();
   const mediaSessions = new WeakMap();
   let mediaSessionPromise = null;
+  const guardedMediaElements = new Set();
   let recoveryBurstTimer = null;
   let recoveryBurstRemaining = 0;
 
-  /** @type {{ active: boolean, observer: (MutationObserver|null), recovering: boolean, internalWiring: boolean, creatingContext: boolean, gainDb: number, blastGuard: boolean, lastError: string }} */
+  /** @type {{ active: boolean, observer: (MutationObserver|null), recovering: boolean, internalWiring: boolean, creatingContext: boolean, gainDb: number, lastError: string }} */
   const state = {
     active: false,
     observer: null,
@@ -38,7 +40,6 @@
     internalWiring: false,
     creatingContext: false,
     gainDb: 0,
-    blastGuard: false,
     lastError: '',
   };
 
@@ -60,7 +61,6 @@
     if (event.data.type === 'START') start(event.data);
     if (event.data.type === 'STOP') stop();
     if (event.data.type === 'SET_GAIN') setGain(event.data.gainDb);
-    if (event.data.type === 'SET_BLAST_GUARD') setBlastGuard(event.data.blastGuard);
     if (event.data.type === 'STATUS_REQUEST') reportStatus('HOOK_STATUS', { requestId: event.data.requestId });
   }
 
@@ -88,22 +88,27 @@
   }
 
   /**
-   * @param {{ gainDb?: number, blastGuard?: boolean }|null} [nextState]
+   * @param {{ gainDb?: number }|null} [nextState]
    */
   function start(nextState = null) {
     const wasActive = state.active;
     if (nextState && typeof nextState === 'object') {
       state.gainDb = normalizeGainDb(nextState.gainDb);
-      state.blastGuard = Boolean(nextState.blastGuard);
     }
     state.active = true;
     state.gainDb = normalizeGainDb(state.gainDb);
     state.lastError = '';
 
+    // Owner-directed seamless start: pre-warm the media session (AudioContext +
+    // AudioWorklet module + node) so it is ready before the first media element
+    // plays. The CPU cost is accepted. Never awaited; failures surface via setError.
+    if (!mediaSessions.has(document) && !mediaSessionPromise) {
+      void ensureMediaSession().catch(() => {});
+    }
+
     if (wasActive) {
       routeSessions();
       updateSessionGains();
-      updateSessionBlastGuards();
       reportStatus('HOOK_STATUS');
       return;
     }
@@ -119,7 +124,6 @@
     attachExistingMediaElements();
     routeSessions();
     updateSessionGains();
-    updateSessionBlastGuards();
     notifySessionStarts();
     void recoverAudio();
     scheduleRecoveryBurst();
@@ -132,17 +136,12 @@
     reportStatus('HOOK_STATUS');
   }
 
-  function setBlastGuard(blastGuard) {
-    state.blastGuard = Boolean(blastGuard);
-    updateSessionBlastGuards();
-    reportStatus('HOOK_STATUS');
-  }
-
   function stop() {
     if (!state.active) return;
     state.active = false;
     clearRecoveryBurst();
     console.log('[hook] stopping');
+    restoreAllHookGuards();
 
     for (const session of sessions) {
       bypassSession(session);
@@ -499,7 +498,6 @@
       state.lastError = '';
       routeSession(session, workletNode);
       updateSessionGain(session);
-      updateSessionBlastGuard(session);
       notifySessionStart(session);
       reportStatus('HOOK_STATUS');
     } catch (e) {
@@ -544,12 +542,6 @@
     }
   }
 
-  function updateSessionBlastGuards() {
-    for (const session of sessions) {
-      updateSessionBlastGuard(session);
-    }
-  }
-
   function notifySessionStarts() {
     for (const session of sessions) {
       notifySessionStart(session);
@@ -563,13 +555,6 @@
     } catch {}
   }
 
-  function updateSessionBlastGuard(session) {
-    if (!session?.workletNode) return;
-    try {
-      session.workletNode.port.postMessage({ type: 'set-blast-guard', blastGuard: state.blastGuard });
-    } catch {}
-  }
-
   function notifySessionStart(session) {
     if (!session?.workletNode) return;
     try {
@@ -577,21 +562,66 @@
     } catch {}
   }
 
+  // Silence-until-routed guard: while the extension is active, a managed media
+  // element is muted synchronously at attach time (before the patched play()
+  // reaches the original) so it cannot play un-processed audio at full volume
+  // while createMediaElementSource + connect are still pending. The previous
+  // muted value is restored once routing is live (source connected to the
+  // session input), on any attach error, on STOP/teardown, or by a 1.5 s safety
+  // timer — never a permanent mute; on failure the element plays raw as before.
+  /** @param {any} mediaElement */
+  function armHookGuard(mediaElement) {
+    if (mediaElement.__tnGuarding) return;
+    guardedMediaElements.add(mediaElement);
+    mediaElement.__tnGuardPrevMuted = mediaElement.muted;
+    mediaElement.muted = true;
+    mediaElement.__tnGuarding = true;
+    mediaElement.__tnGuardTimer = setTimeout(() => restoreHookGuard(mediaElement), HOOK_GUARD_TIMEOUT_MS);
+  }
+
+  /** @param {any} mediaElement */
+  function restoreHookGuard(mediaElement) {
+    if (!mediaElement || !mediaElement.__tnGuarding) return;
+    if (mediaElement.__tnGuardTimer) {
+      clearTimeout(mediaElement.__tnGuardTimer);
+      mediaElement.__tnGuardTimer = null;
+    }
+    mediaElement.muted = mediaElement.__tnGuardPrevMuted;
+    delete mediaElement.__tnGuarding;
+    delete mediaElement.__tnGuardPrevMuted;
+    delete mediaElement.__tnGuardTimer;
+    guardedMediaElements.delete(mediaElement);
+  }
+
+  function restoreAllHookGuards() {
+    for (const mediaElement of Array.from(guardedMediaElements)) {
+      restoreHookGuard(mediaElement);
+    }
+  }
+
+  /** @param {any} mediaElement */
   async function attachMediaElement(mediaElement) {
     if (!state.active || !isMediaElement(mediaElement) || mediaElement.__tnAttached) return;
     if (mediaElement.__tnWebAudio) return;
+    if (/** @type {any} */ (mediaElement).__tnGuarding) return;
+    // Arm synchronously (before the first await) so the patched play(), which
+    // calls the original right after this, can only produce silence until routing.
+    armHookGuard(mediaElement);
 
     try {
       const session = await ensureMediaSession();
       await session.context.resume();
       const source = session.context.createMediaElementSource(mediaElement);
       source.connect(session.inputNode);
+      // Routing is live: restore the pre-guard muted value.
+      restoreHookGuard(mediaElement);
       mediaElement.__tnAttached = true;
       session.sources.add(source);
       session.mediaElements.add(mediaElement);
       console.log('[hook] media element attached:', mediaElement.tagName, mediaElement.src?.slice(0, 60));
       reportStatus('HOOK_STATUS');
     } catch (e) {
+      restoreHookGuard(mediaElement);
       if (e instanceof DOMException && e.name === 'InvalidStateError') {
         mediaElement.__tnWebAudio = true;
         console.log('[hook] media element already connected to another source, skipping');
@@ -671,6 +701,7 @@
     } catch {}
 
     for (const mediaElement of session.mediaElements) {
+      restoreHookGuard(mediaElement);
       mediaElement.__tnAttached = false;
     }
 

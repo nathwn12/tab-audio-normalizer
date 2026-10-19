@@ -1,6 +1,5 @@
 const resetBtnEl = /** @type {HTMLButtonElement} */ (document.getElementById('reset-btn'));
 const toggle = /** @type {HTMLInputElement} */ (document.getElementById('toggle'));
-const blastGuardToggle = /** @type {HTMLInputElement} */ (document.getElementById('blast-guard'));
 const gainSlider = /** @type {HTMLInputElement} */ (document.getElementById('gain-slider'));
 const gainValueEl = /** @type {HTMLElement} */ (document.getElementById('gain-value'));
 const hostnameEl = /** @type {HTMLElement} */ (document.getElementById('hostname'));
@@ -58,7 +57,6 @@ function requireStoredTruth(res) {
   const r = /** @type {Record<string, unknown>} */ (res);
   if (r.ok === false) throw new Error(String(r.error || 'save failed'));
   if (typeof r.enabled !== 'boolean'
-    || typeof r.blastGuard !== 'boolean'
     || !Number.isFinite(Number(r.gainDb))) {
     throw new Error('save failed: response carries no stored truth');
   }
@@ -76,7 +74,7 @@ async function revertToStoredTruth() {
   if (!state || state.ok !== true) {
     throw new Error(String((state && state.error) || 'read failed'));
   }
-  applyControlState({ enabled: state.enabled, gainDb: state.gainDb, blastGuard: state.blastGuard });
+  applyControlState({ enabled: state.enabled, gainDb: state.gainDb });
   return state;
 }
 
@@ -91,10 +89,6 @@ void init();
 
 toggle.addEventListener('change', () => {
   void toggleSite();
-});
-
-blastGuardToggle.addEventListener('change', () => {
-  void saveBlastGuard(Boolean(blastGuardToggle.checked));
 });
 
 gainSlider.addEventListener('input', () => {
@@ -118,11 +112,9 @@ gainSlider.addEventListener('pointerdown', () => {
 resetBtnEl.addEventListener('click', () => {
   if (gainSlider.disabled) return;
   gainSlider.value = '0';
-  blastGuardToggle.checked = false;
   renderGain(0);
-  // Reset is ONE logical update — gain 0 + Blast Guard off in a SINGLE
-  // field-level intent and a SINGLE per-site storage write. Two separate
-  // writes would leave a crash/close window between them.
+  // Reset is ONE single-field intent — gain 0 in a SINGLE message and a
+  // SINGLE per-site storage write.
   void saveResetInner();
 });
 
@@ -165,11 +157,9 @@ async function init() {
     // Authority first: the stored per-site record is the truth.
     toggle.checked = state ? Boolean(state.enabled) : false;
     gainSlider.value = String(popupShared.clampGainDb(state?.gainDb));
-    blastGuardToggle.checked = Boolean(state?.blastGuard);
     renderGain(gainSlider.value);
     toggle.disabled = false;
     syncGainControlState();
-    syncBlastGuardControlState();
     syncPresetControlState();
 
     if (toggle.checked) {
@@ -189,7 +179,6 @@ async function init() {
 
 function disableAll(statusText) {
   toggle.disabled = true;
-  blastGuardToggle.disabled = true;
   gainSlider.disabled = true;
   syncPresetControlState();
   renderStatus({ indicator: 'gray', text: statusText });
@@ -212,13 +201,12 @@ async function toggleSite() {
 
   toggle.disabled = true;
   syncGainControlState();
-  syncBlastGuardControlState();
 
   const wanted = toggle.checked;
   try {
-    // Field-level intent: ONLY the toggled field. Never send gainDb /
-    // Blast Guard from a cache — a concurrent sibling popup may have
-    // changed them newer, and a snapshot would revert them. Dispatched
+    // Field-level intent: ONLY the toggled field. Never send gainDb
+    // from a cache — a concurrent sibling popup may have
+    // changed it newer, and a snapshot would revert it. Dispatched
     // immediately with no popup-side chain; the background applies on
     // arrival (last-accepted-write-wins) and returns the stored truth.
     const res = await chrome.runtime.sendMessage({
@@ -229,7 +217,7 @@ async function toggleSite() {
     });
     requireStoredTruth(res);
     // Render what the background returned, never what was sent.
-    applyControlState({ enabled: res.enabled, gainDb: res.gainDb, blastGuard: res.blastGuard });
+    applyControlState({ enabled: res.enabled, gainDb: res.gainDb });
 
     if (res.enabled) {
       runtimeActivationState = 'pending';
@@ -263,7 +251,6 @@ async function toggleSite() {
   } finally {
     toggle.disabled = false;
     syncGainControlState();
-    syncBlastGuardControlState();
     syncPresetControlState();
   }
 }
@@ -274,8 +261,8 @@ async function saveGainInner(gainDb) {
   if (!toggle.checked) return;
   const wantedGain = popupShared.clampGainDb(gainDb);
   try {
-    // Field-level intent: ONLY gainDb. Never send enabled / Blast Guard
-    // from this popup's cache — a sibling popup may own newer values.
+    // Field-level intent: ONLY gainDb. Never send enabled
+    // from this popup's cache — a sibling popup may own a newer value.
     // The background applies on arrival and returns the stored truth.
     const res = await chrome.runtime.sendMessage({
       type: 'SET_SITE_STATE',
@@ -306,50 +293,11 @@ async function saveGainInner(gainDb) {
   }
 }
 
-async function saveBlastGuard(blastGuard) {
-  if (!toggle.checked || blastGuardToggle.disabled) return;
-  return saveBlastGuardInner(blastGuard);
-}
-
-async function saveBlastGuardInner(blastGuard) {
-  if (!toggle.checked || blastGuardToggle.disabled) return;
-  const previous = blastGuardToggle.checked;
-  try {
-    // Field-level intent: ONLY blastGuard. Render the returned truth.
-    const res = await chrome.runtime.sendMessage({
-      type: 'SET_SITE_STATE',
-      siteKey,
-      tabId,
-      set: { blastGuard },
-    });
-    requireStoredTruth(res);
-    blastGuardToggle.checked = Boolean(res.blastGuard);
-    if (tabId) {
-      const gainDb = popupShared.clampGainDb(gainSlider.value);
-      await chrome.tabs.sendMessage(tabId, {
-        type: 'SET_DOCUMENT_STATE',
-        siteKey,
-        enabled: toggle.checked,
-        gainDb,
-        blastGuard: Boolean(res.blastGuard),
-      }, { frameId: 0 }).catch(() => {});
-    }
-  } catch {
-    blastGuardToggle.checked = previous;
-    let reverted = false;
-    try {
-      await revertToStoredTruth();
-      reverted = true;
-    } catch {}
-    reportWriteError(reverted ? 'Could not save Blast Guard. Reverted.' : 'Could not save Blast Guard. State unknown — reopen the popup and try again.');
-  }
-}
-
 /**
- * Reset both gain and Blast Guard in ONE message / ONE storage write.
- * Field-level: ONLY the two fields the reset touches — never `enabled`.
- * The two fields apply together and the popup renders the returned truth,
- * never the sent 0/false.
+ * Reset gain in ONE message / ONE storage write.
+ * Field-level: ONLY the field the reset touches — never `enabled`.
+ * The field applies and the popup renders the returned truth,
+ * never the sent 0.
  */
 async function saveResetInner() {
   if (!toggle.checked) return;
@@ -358,16 +306,14 @@ async function saveResetInner() {
       type: 'SET_SITE_STATE',
       siteKey,
       tabId,
-      set: { gainDb: 0, blastGuard: false },
+      set: { gainDb: 0 },
     });
     requireStoredTruth(res);
-    // Render the returned truth, never the sent values: if the background
-    // stored something else, acknowledging 0/false would claim a change
+    // Render the returned truth, never the sent value: if the background
+    // stored something else, acknowledging 0 would claim a change
     // that never happened.
     const nextGain = popupShared.clampGainDb(res.gainDb);
-    const nextGuard = Boolean(res.blastGuard);
     gainSlider.value = String(nextGain);
-    blastGuardToggle.checked = nextGuard;
     renderGain(nextGain);
     if (tabId) {
       await chrome.tabs.sendMessage(tabId, {
@@ -375,7 +321,6 @@ async function saveResetInner() {
         siteKey,
         enabled: toggle.checked,
         gainDb: nextGain,
-        blastGuard: nextGuard,
       }, { frameId: 0 }).catch(() => {});
     }
   } catch {
@@ -470,7 +415,6 @@ async function refreshDocumentStatus() {
     applyControlState({
       enabled,
       gainDb: doc?.gainDb,
-      blastGuard: doc?.blastGuard,
     });
 
     if (hookActive) {
@@ -552,22 +496,16 @@ function renderGain(gainDb) {
   gainValueEl.textContent = `${prefix}${numeric.toFixed(1)} dB`;
 }
 
-function applyControlState({ enabled, gainDb, blastGuard }) {
+function applyControlState({ enabled, gainDb }) {
   toggle.checked = Boolean(enabled);
   gainSlider.value = String(popupShared.clampGainDb(gainDb));
-  blastGuardToggle.checked = Boolean(blastGuard);
   renderGain(gainSlider.value);
   syncGainControlState();
-  syncBlastGuardControlState();
   syncPresetControlState();
 }
 
 function syncGainControlState() {
   gainSlider.disabled = toggle.disabled || !toggle.checked;
-}
-
-function syncBlastGuardControlState() {
-  blastGuardToggle.disabled = toggle.disabled || !toggle.checked;
 }
 
 function syncPresetControlState() {

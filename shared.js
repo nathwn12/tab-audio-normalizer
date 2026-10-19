@@ -8,7 +8,6 @@
   /** @type {Record<string, unknown>} */ (root).TabNormalizerShared = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   const DEFAULT_GAIN_DB = 0;
-  const DEFAULT_BLAST_GUARD = false;
   const MIN_GAIN_DB = -12;
   const MAX_GAIN_DB = 12;
   const GAIN_STEP_DB = 0.5;
@@ -77,19 +76,18 @@
 
   function normalizeSiteSettings(value) {
     if (value === true) {
-      return { enabled: true, gainDb: DEFAULT_GAIN_DB, blastGuard: DEFAULT_BLAST_GUARD };
+      return { enabled: true, gainDb: DEFAULT_GAIN_DB };
     }
 
     const raw = value && typeof value === 'object' ? value : {};
     return {
       enabled: Boolean(raw.enabled),
       gainDb: clampGainDb(raw.gainDb),
-      blastGuard: Boolean(raw.blastGuard),
     };
   }
 
   // Per-site top-level storage keys: `site:<siteKey>` holds that site's
-  // { enabled, gainDb, blastGuard, seq, mirror } in ONE value. The documented
+  // { enabled, gainDb, seq, mirror } in ONE value. The documented
   // `chrome.storage.local.set` granularity is the top-level key ("Any other
   // key/value pairs in storage will not be affected"), so a write to
   // `site:youtube.com` can never touch `site:example.com` — cross-site
@@ -144,7 +142,6 @@
     return {
       enabled,
       gainDb: clampGainDb(raw.gainDb),
-      blastGuard: Boolean(raw.blastGuard),
       seq,
       mirror: Boolean(mirrorRaw),
     };
@@ -162,8 +159,8 @@
    * legacy entry exists for the site.
    * Lossless rule: legacy keys are NORMALISED before matching, so a
    * `www.`/sibling-subdomain key is found when reading the canonical key.
-   * A user with only `siteSettings['www.youtube.com']` keeps gain and
-   * Blast Guard when reading `youtube.com`.
+   * A user with only `siteSettings['www.youtube.com']` keeps gain when
+   * reading `youtube.com`.
    * @param {Record<string, unknown>} siteSettings
    * @param {Record<string, boolean>} activeSites
    * @param {Record<string, unknown>} siteToggles
@@ -178,7 +175,7 @@
     // Normalised existence: any raw key collapsing to `siteKey` counts.
     // The old exact-match check (`settings[siteKey] || settings[raw]`)
     // missed a `www.`-only entry when reading the canonical key and
-    // returned null, dropping gain/Blast Guard on upgrade.
+    // returned null, dropping gain on upgrade.
     let hasSettings = false;
     let hasToggle = false;
     let hasActive = false;
@@ -211,7 +208,6 @@
     return normalizeSiteRecord({
       enabled,
       gainDb: base.gainDb,
-      blastGuard: base.blastGuard,
       seq: 0,
       mirror: enabled,
     });
@@ -232,7 +228,7 @@
       // raw entry must not wipe the first's fields. Precedence is
       // last-explicit-field-wins — a field present in the later raw entry
       // overwrites, an absent field preserves the earlier value. The `true`
-      // shorthand asserts only `enabled:true` and preserves gain/guard.
+      // shorthand asserts only `enabled:true` and preserves gain.
       if (config === true) {
         next[siteKey] = { ...prev, enabled: true };
         continue;
@@ -241,7 +237,6 @@
       const merged = { ...prev };
       if (Object.prototype.hasOwnProperty.call(raw, 'enabled')) merged.enabled = Boolean(raw.enabled);
       if (Object.prototype.hasOwnProperty.call(raw, 'gainDb')) merged.gainDb = clampGainDb(raw.gainDb);
-      if (Object.prototype.hasOwnProperty.call(raw, 'blastGuard')) merged.blastGuard = Boolean(raw.blastGuard);
       next[siteKey] = normalizeSiteSettings(merged);
     }
 
@@ -263,7 +258,7 @@
     const migrated = migrateSiteSettings(siteSettings, activeSites);
 
     if (!siteKey) {
-      return { siteKey: '', enabled: false, gainDb: DEFAULT_GAIN_DB, blastGuard: DEFAULT_BLAST_GUARD };
+      return { siteKey: '', enabled: false, gainDb: DEFAULT_GAIN_DB };
     }
 
     return {
@@ -351,7 +346,6 @@
 
   return {
     DEFAULT_GAIN_DB,
-    DEFAULT_BLAST_GUARD,
     clampGainDb,
     extractHostname,
     getSiteKey,

@@ -5,7 +5,6 @@
 /** Typed interface matching the API returned by shared.js factory function */
 interface TabNormalizerSharedApi {
   DEFAULT_GAIN_DB: number;
-  DEFAULT_BLAST_GUARD: boolean;
   clampGainDb: (value: unknown) => number;
   extractHostname: (url: string) => string;
   getSiteKey: (hostname: string) => string;
@@ -19,7 +18,7 @@ interface TabNormalizerSharedApi {
     siteSettings: Record<string, unknown>,
     activeSites: Record<string, boolean>,
     hostnameOrSiteKey: string
-  ) => { siteKey: string; enabled: boolean; gainDb: number; blastGuard: boolean };
+  ) => { siteKey: string; enabled: boolean; gainDb: number };
   setSiteConfig: (
     siteSettings: Record<string, unknown>,
     activeSites: Record<string, boolean>,
@@ -48,13 +47,13 @@ interface TabNormalizerSharedApi {
   siteStorageKey: (siteKey: string) => string;
   isSiteStorageKey: (key: string) => boolean;
   siteKeyFromStorageKey: (key: string) => string;
-  normalizeSiteRecord: (value: unknown) => { siteKey?: string; enabled: boolean; gainDb: number; blastGuard: boolean; seq: number; mirror: boolean };
+  normalizeSiteRecord: (value: unknown) => { siteKey?: string; enabled: boolean; gainDb: number; seq: number; mirror: boolean };
   migrateLegacyToRecord: (
     siteSettings: Record<string, unknown>,
     activeSites: Record<string, unknown>,
     siteToggles: Record<string, unknown>,
     hostnameOrSiteKey: string
-  ) => { enabled: boolean; gainDb: number; blastGuard: boolean; seq: number; mirror: boolean } | null;
+  ) => { enabled: boolean; gainDb: number; seq: number; mirror: boolean } | null;
 
 }
 

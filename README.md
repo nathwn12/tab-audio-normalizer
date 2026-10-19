@@ -36,17 +36,17 @@ Then load it unpacked with the steps above.
 
 ## Use it
 
-Open a page that plays audio and click the extension icon. The popup names the current site. Switch **Active** on; the setting is saved per site, so it holds across tabs. Drag the gain slider (-12 to +12 dB) for an immediate output trim, or pick **Speech**, **Music**, or **Boost**. Switch **Blast Guard** on for stricter peak protection, and click the reset button to return a site to defaults.
+Open a page that plays audio and click the extension icon. The popup names the current site. Switch **Active** on; the setting is saved per site, so it holds across tabs. Drag the gain slider (-12 to +12 dB) for an immediate output trim, or pick **Speech**, **Music**, or **Boost**. Click the reset button to return a site to defaults.
 
 ## What you get
 
 - One **Active** toggle per site, remembered across tabs.
 - Human-comfort loudness: within-program levelling (dead-band AGC — no adaptation inside ±2.5 LU of the program, engagement outside it) plus slow normalisation toward a fixed **-20 LUFS** program target, driven by gated integrated loudness per ITU-R BS.1770-4 / EBU R128 and measured from the levelled signal.
 - Speech, Music, and Boost presets plus a manual gain slider (-12 to +12 dB); the slider is an immediate output trim, separate from the target.
-- Blast Guard mode with stricter peak protection.
 - Fully local processing: your audio never leaves the browser.
-- A true-peak limiter holds output at or below **-1 dBTP** (-2 dBTP with Blast Guard on), measured offline against ffmpeg's true-peak meter across a fixture set and an adversarial sweep — not verified in a browser, and not a guarantee for every possible signal.
-- You hear a short clip start near its original loudness and move gradually toward the target over roughly 15–20 seconds while the engine acquires a valid gated measurement.
+- A true-peak limiter holds output at or below **-1 dBTP**, measured offline against ffmpeg's true-peak meter across a fixture set and an adversarial sweep — not verified in a browser, and not a guarantee for every possible signal.
+- Startup: while an element attaches, it stays silent until its audio graph is routed (a 1.5-second fallback restores it if routing never completes), and the session pre-warms before your first playback. A loud cold start is attenuated toward the target from a ~100 ms probe: the old chain was still only -1.55 dB down at 0.5 s, while this one reaches -9.3 dB by 0.5 s and settles at -10.00 dB — measured offline in the loudness harness, not verified in a browser.
+- Quiet-passage lift and level-step recovery are fixed: the dialogue fixture's quiet section rises +6.74 dB, its loud:quiet spread shrinks 12.77 dB (26.02 → 13.25), its tail settles at -20.00 LUFS, and the 60 s-quiet/30 s-loud step lands at -20.40 LUFS (delta -0.40, tolerance ±1.0) — measured offline in the loudness harness (qa/loudness-verify.cjs, release gate), not verified in a browser.
 
 ## Requirements
 

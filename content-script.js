@@ -17,10 +17,10 @@
 
   /** @type {{
    *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
-   *   blastGuard: boolean, injected: boolean, hookAlive: boolean,
+   *   injected: boolean, hookAlive: boolean,
    *   hookActive: boolean, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
-   *   transient: ({ enabled: boolean, gainDb: number, blastGuard: boolean } | null),
+   *   transient: ({ enabled: boolean, gainDb: number } | null),
    *   pendingProbe: ({ requestId: string, promise: Promise<boolean>, resolve: (v: boolean) => void, timeoutId: number } | null),
    *   popupProbe: (Promise<boolean> | null),
    *   syncInFlight: boolean, queuedSyncReason: string,
@@ -32,7 +32,6 @@
     siteKey: '',
     enabled: false,
     gainDb: contentShared.DEFAULT_GAIN_DB,
-    blastGuard: contentShared.DEFAULT_BLAST_GUARD,
     injected: false,
     hookAlive: false,
     hookActive: false,
@@ -200,8 +199,7 @@
           : null;
         if (!oldRec || !newRec) return true;
         return oldRec.enabled !== newRec.enabled
-          || oldRec.gainDb !== newRec.gainDb
-          || oldRec.blastGuard !== newRec.blastGuard;
+          || oldRec.gainDb !== newRec.gainDb;
       }
       // Legacy fallback: evaluate the effective config (settings + actives
       // + toggles, all normalised) on both sides. A `siteToggles` change for
@@ -216,15 +214,14 @@
       const oldMig = contentShared.migrateLegacyToRecord(oldSettings, oldActive, oldToggles, state.siteKey);
       const newMig = contentShared.migrateLegacyToRecord(newSettings, newActive, newToggles, state.siteKey);
       if (oldMig || newMig) {
-        const o = oldMig || { enabled: false, gainDb: 0, blastGuard: false };
-        const n = newMig || { enabled: false, gainDb: 0, blastGuard: false };
-        return o.enabled !== n.enabled || o.gainDb !== n.gainDb || o.blastGuard !== n.blastGuard;
+        const o = oldMig || { enabled: false, gainDb: 0 };
+        const n = newMig || { enabled: false, gainDb: 0 };
+        return o.enabled !== n.enabled || o.gainDb !== n.gainDb;
       }
       const oldConfig = contentShared.getSiteConfig(oldSettings, oldActive, state.siteKey);
       const newConfig = contentShared.getSiteConfig(newSettings, newActive, state.siteKey);
       return oldConfig.enabled !== newConfig.enabled
-        || oldConfig.gainDb !== newConfig.gainDb
-        || oldConfig.blastGuard !== newConfig.blastGuard;
+        || oldConfig.gainDb !== newConfig.gainDb;
     } catch {
       return true;
     }
@@ -236,7 +233,7 @@
    * `siteToggles` when present via the background migration) are the fallback
    * for data written before the per-site keys existed. Read-only: this file
    * performs NO storage write.
-   * @returns {Promise<{ enabled: boolean, gainDb: number, blastGuard: boolean }>}
+   * @returns {Promise<{ enabled: boolean, gainDb: number }>}
    */
   async function readStoredConfig() {
     const perKey = contentShared.siteStorageKey(state.siteKey);
@@ -252,7 +249,7 @@
     const perValue = perKey ? stored[perKey] : undefined;
     if (perValue && typeof perValue === 'object') {
       const rec = contentShared.normalizeSiteRecord(perValue);
-      return { enabled: rec.enabled, gainDb: rec.gainDb, blastGuard: rec.blastGuard };
+      return { enabled: rec.enabled, gainDb: rec.gainDb };
     }
     // Lossless legacy fallback: normalise every legacy shape (settings,
     // actives AND toggles) before matching, so a `www.`-only entry is found
@@ -262,10 +259,10 @@
       stored.siteSettings, stored.activeSites, stored.siteToggles, state.siteKey,
     );
     if (migrated) {
-      return { enabled: migrated.enabled, gainDb: migrated.gainDb, blastGuard: migrated.blastGuard };
+      return { enabled: migrated.enabled, gainDb: migrated.gainDb };
     }
     const config = contentShared.getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
-    return { enabled: config.enabled, gainDb: config.gainDb, blastGuard: config.blastGuard };
+    return { enabled: config.enabled, gainDb: config.gainDb };
   }
 
   function startSpaWatch() {
@@ -331,9 +328,8 @@
         return;
       }
 
-      postToPage('START', { reason, gainDb: state.gainDb, blastGuard: state.blastGuard });
+      postToPage('START', { reason, gainDb: state.gainDb });
       postToPage('SET_GAIN', { gainDb: state.gainDb });
-      postToPage('SET_BLAST_GUARD', { blastGuard: state.blastGuard });
 
       state.activationRetryCount += 1;
       if (state.activationRetryCount < ACTIVATE_RETRY_COUNT && (!state.hookAlive || !state.hookActive)) {
@@ -387,15 +383,11 @@
     const gainDb = Object.prototype.hasOwnProperty.call(message, 'gainDb')
       ? contentShared.clampGainDb(message.gainDb)
       : base.gainDb;
-    const blastGuard = Object.prototype.hasOwnProperty.call(message, 'blastGuard')
-      ? Boolean(message.blastGuard)
-      : base.blastGuard;
-    state.transient = { enabled, gainDb, blastGuard };
+    state.transient = { enabled, gainDb };
     state.enabled = enabled;
     state.gainDb = gainDb;
-    state.blastGuard = blastGuard;
 
-    console.log('[cs] document-state (transient):', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'blastGuard:', blastGuard);
+    console.log('[cs] document-state (transient):', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb);
 
     const hookAlive = await evaluateHookHealth();
     const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
@@ -410,9 +402,8 @@
 
     if (action === 'start') {
       setPendingStart();
-      postToPage('START', { reason: 'document-state', gainDb, blastGuard });
+      postToPage('START', { reason: 'document-state', gainDb });
       postToPage('SET_GAIN', { gainDb });
-      postToPage('SET_BLAST_GUARD', { blastGuard });
       scheduleActivationRetry('document-state');
       startSpaWatch();
       console.log('[cs] sent START to hook');
@@ -434,7 +425,6 @@
     if (state.injected) {
       startSpaWatch();
       postToPage('SET_GAIN', { gainDb });
-      postToPage('SET_BLAST_GUARD', { blastGuard });
       scheduleActivationRetry('document-state');
     }
     return { ok: true };
@@ -493,13 +483,11 @@
       // settings for the live document until cleared (disable/clear-override).
       const enabled = state.transient ? state.transient.enabled : config.enabled;
       const gainDb = state.transient ? state.transient.gainDb : config.gainDb;
-      const blastGuard = state.transient ? state.transient.blastGuard : config.blastGuard;
 
       state.enabled = enabled;
       state.gainDb = gainDb;
-      state.blastGuard = blastGuard;
 
-      console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'blastGuard:', blastGuard, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason);
+      console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason);
 
       const hookAlive = enabled ? await evaluateHookHealth() : state.hookAlive;
       const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
@@ -514,9 +502,8 @@
 
       if (action === 'start') {
         setPendingStart();
-        postToPage('START', { reason, gainDb, blastGuard });
+        postToPage('START', { reason, gainDb });
         postToPage('SET_GAIN', { gainDb });
-        postToPage('SET_BLAST_GUARD', { blastGuard });
         scheduleActivationRetry(reason);
         startSpaWatch();
         console.log('[cs] sent START to hook');
@@ -545,7 +532,6 @@
       if (enabled && state.injected) {
         startSpaWatch();
         postToPage('SET_GAIN', { gainDb });
-        postToPage('SET_BLAST_GUARD', { blastGuard });
         scheduleActivationRetry(reason);
       }
     } finally {
@@ -582,9 +568,8 @@
         }
         console.log('[cs] page-hook.js injected via background');
         if (state.enabled) {
-          postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb, blastGuard: state.blastGuard });
+          postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb });
           postToPage('SET_GAIN', { gainDb: state.gainDb });
-          postToPage('SET_BLAST_GUARD', { blastGuard: state.blastGuard });
           scheduleActivationRetry('inject-onload');
         }
       })
@@ -723,7 +708,6 @@
     if (state.transient) {
       state.enabled = state.transient.enabled;
       state.gainDb = state.transient.gainDb;
-      state.blastGuard = state.transient.blastGuard;
       return { ...state.transient };
     }
     // The per-site record is the single authority (legacy maps are the
@@ -731,12 +715,10 @@
     const config = await readStoredConfig();
     const enabled = config.enabled;
     const gainDb = config.gainDb;
-    const blastGuard = config.blastGuard;
 
     state.enabled = enabled;
     state.gainDb = gainDb;
-    state.blastGuard = blastGuard;
-    return { enabled, gainDb, blastGuard };
+    return { enabled, gainDb };
   }
 
   async function getDocumentStatus() {
@@ -765,7 +747,6 @@
       hostname: state.hostname,
       siteKey: state.siteKey,
       gainDb: state.gainDb,
-      blastGuard: state.blastGuard,
       hookAlive: state.hookAlive,
       hookActive: state.hookActive,
       activating: isActivationPending(),

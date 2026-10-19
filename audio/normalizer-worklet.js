@@ -102,7 +102,11 @@
  *      never credited with loudness recovery). Boost capped at +6 dB (Dolby
  *      Film max boost, §2.1 — the smallest published boost, so quiet is lifted
  *      the least); cut bounded only by the TOTAL clamp. Silence gate (also
- *      loudnorm): below the relative gate the AGC holds its last gain.
+ *      loudnorm): below the relative gate the AGC holds its last gain. A boost
+ *      is applied only while the ~0.1 s probe is itself below the programme
+ *      mean's dead-band edge: the 3 s ST's boxcar otherwise held a boost
+ *      ~1.5 s into a loud return, and those mis-lifted samples pushed
+ *      comfort-dialogue's settled tail to -20.50 (measured 2026-10-19).
  *      It never reads the integrated measurement's OUTPUT (no feedback
  *      oscillation): ST and global are both RAW-input quantities.
  *   3. Dual metering: per-sample combined power p = sum_c w_c * y_c^2 into a
@@ -118,16 +122,37 @@
  *      the fixed -20 LUFS program target, over an AES ROLLING average of the
  *      last 30 s of elapsed samples (SPEC S4): blocks older than the window
  *      expire by stamp, so the mean always describes the current program,
- *      never hours of retained history. Silence holds the last gain (§6).
- *      The +12/-20 dB clamp (+6/-24 dB Blast
- *      Guard) binds the TOTAL program gain (levelling + normalization). No
- *      warm-up hold: the levelling and the slow loop engage from the first
- *      gated block (~400 ms), then slow slew.
+ *      never hours of retained history. Within the window only the blocks
+ *      whose level lies within [-6, +15] LU of the current level count
+ *      (SLOW_LOCK_LO_DB/HI_DB): without that gate a loud passage pinned a
+ *      quiet passage's mean (the relative gate excludes only blocks BELOW the
+ *      mean), the quiet rose -0.79 dB (gate >= 3.00) and the +10 dB step's
+ *      stale quiet held the gain ~4 LU high (-16.60 at t = 70 s, gate +-1.0);
+ *      with it the dialogue's quiet rises 6.74 dB, its tail reads -20.00 and
+ *      the step lands at -20.40 (measured 2026-10-19, 48 kHz).
+ *      Silence holds the last gain (§6).
+ *      The +12/-20 dB clamp binds the TOTAL program gain (levelling +
+ *      normalization). COLD START (onset guard, OURS/house — same status as
+ *      WARM_SECONDS and FAST_ONSET_SECONDS below: no source publishes a
+ *      cold-start number): before the first gated levelled block the slow
+ *      loop has no measurement, so a loud onset passed uncut for ~400 ms and
+ *      then converged with the 0.6 s down time constant (measured 2026-10-19
+ *      on comfort-loud: still -1.55 dB at 0.5 s, -6 dB only at ~0.95 s).
+ *      A ~100 ms levelled-power probe (FAST_ONSET_SECONDS) drives a CUT-ONLY
+ *      (never boost) pre-cut toward the fixed target through a fast (~0.12 s)
+ *      log-domain slew, ratcheting down only; the standard slow loop takes
+ *      over FROM the current gain with no snap (measured 2026-10-19 on the
+ *      same program: -9.3 dB by 0.5 s, -9.7 dB by 1.0 s, settled -10.00, never deeper than
+ *      settled + 1.5 dB; quiet onset untouched). Still house wiring, not a
+ *      sourced value; BS.1770's 400 ms first-block floor remains (the guard
+ *      probes, it does not gate).
  *   5. Slew: asymmetric and slow in the log domain — gain increases (louder) use a
- *      ~3.0 s time constant; gain decreases (quieter) use ~0.6 s (~0.35 s Blast Guard).
- *      The user trim ramps per sample inside one render quantum (no zipper).
+ *      ~3.0 s time constant; gain decreases (quieter) use ~0.6 s. The cold-start
+ *      onset guard slews with its own fast (~0.12 s) constant while the session
+ *      is cold (before the first gated levelled block). The user trim ramps per
+ *      sample inside one render quantum (no zipper).
  *   6. True-peak limiter LAST: 4x polyphase detector (97-tap Kaiser filter above)
- *      driving a lookahead limiter. Ceiling -1 dBTP (-2 dBTP Blast Guard) with
+ *      driving a lookahead limiter. Ceiling -1 dBTP with
  *      a 1.0 dB internal detector margin — sized from the MEASURED worst-case
  *      end-to-end under-read of this detector against the ffmpeg ebur128
  *      oracle (0.51 dB on a steady full-scale 11.025 kHz tone, where the oracle
@@ -149,7 +174,7 @@
  *   handles 1..6 input channels; sampleRate is the live global.
  *   Inbound: set-gain-db {gainDb} (-12..+12) sets the immediate OUTPUT TRIM
  *     (never the target, never measured; per-sample ramp within one quantum);
- *     set-blast-guard {blastGuard:boolean}, start-normalizing (no-op acknowledgement).
+ *     start-normalizing (no-op acknowledgement).
  *   Inbound: set-target-lufs {targetLufs}, set-mode {mode:'normalize'|'level'} (switching mode clears ONLY the loudness measurement -- both K-filter states, both power rings, both retained-block sets, both gated aggregates, momentary/short-term/warm -- so raw-input and levelled blocks can no longer mix; applied program gain (slow + AGC), trim, delay line, limiter targets/gain, both true-peak detector histories and the decaying output-peak hold carry through continuously, so the switch is inaudible apart from normal slew),
  *     reset-meter (full state clear: metering/blocks/warm/gain/detector-history/delay-line/limiter-targets/telemetry, keeps settings).
  *   Outbound: {type:'meter', integratedLufs, shortTermLufs, momentaryLufs, truePeakDb,
@@ -173,7 +198,7 @@ var LOUDNESS_OFFSET = -0.691;
 // number. set-gain-db NEVER moves this target: it is an immediate output
 // trim written into the delay line before the detector (ffmpeg loudnorm
 // offset topology), excluded from both measurements. The +12/-20 dB clamp
-// (+6/-24 dB Blast Guard) binds the TOTAL program gain (levelling +
+// binds the TOTAL program gain (levelling +
 // normalization), never the trim.
 var TARGET_LUFS_DEFAULT = -20;
 var ABS_GATE_LUFS = -70;
@@ -183,17 +208,22 @@ var REL_GATE_FACTOR = Math.pow(10, -10 / 10);
 
 var MAX_BOOST_DB = 12;
 var MAX_CUT_DB = 20;
-var BLAST_GUARD_MAX_BOOST_DB = 6;
-var BLAST_GUARD_MAX_CUT_DB = 24;
 
 var UP_TC_SECONDS = 3.0;
 var DOWN_TC_SECONDS = 0.6;
-var BLAST_GUARD_DOWN_TC_SECONDS = 0.35;
+// Cold-start onset guard (OURS/house, owner-directed 2026-10-19 — same status
+// as WARM_SECONDS below: no source publishes a cold-start number): before the
+// first gated levelled block the slow loop has no measurement, so a loud
+// onset passed uncut for ~400 ms and then converged with the 0.6 s down time
+// constant. A fast levelled-power probe (FAST_ONSET_SECONDS) feeds a CUT-ONLY
+// pre-cut toward the fixed target, slewed with FAST_ONSET_TC_SECONDS while
+// the session is cold; the standard loop takes over FROM the current gain.
+// CPU cost (one extra ring + sum per sample) explicitly accepted by the owner.
+var FAST_ONSET_SECONDS = 0.1;
+var FAST_ONSET_TC_SECONDS = 0.12;
 
 var CEILING_DB = -1;
 var CEILING_LINEAR = Math.pow(10, CEILING_DB / 20);
-var BLAST_GUARD_CEILING_DB = -2;
-var BLAST_GUARD_CEILING_LINEAR = Math.pow(10, BLAST_GUARD_CEILING_DB / 20);
 // True-peak detector margin: 1.0 dB. The detector is the 4x polyphase
 // oversampler built in buildInterpPhases (97 taps, Kaiser beta 6.0); the
 // limiter drives the DETECTOR reading to at most (ceiling - margin), so the
@@ -232,8 +262,6 @@ var LIMITER_ATTACK_SECONDS = 0.002;
 // well inside the lookahead (240 samples at 48 kHz): 64 + 96 = 160 < 240.
 var LIMITER_FLAT_SAMPLES = 64;
 var LIMITER_RELEASE_SECONDS = 0.1;
-var BLAST_GUARD_LIMITER_RELEASE_SECONDS = 0.35;
-var BLAST_GUARD_LIMITER_HOLD_SECONDS = 0.18;
 
 // Within-program levelling: a dead-band AGC on the RAW input (mechanism from
 // ffmpeg loudnorm INNER_FRAME, libavfilter/af_loudnorm.c; band size grounded
@@ -246,6 +274,11 @@ var BLAST_GUARD_LIMITER_HOLD_SECONDS = 0.18;
 //   |d| <= AGC_BAND_DB -> no adaptation at all (the clause-(k) gate)
 //   |d| >  AGC_BAND_DB -> agc = -(d - sign(d) * AGC_BAND_DB),
 //                          compressing the spread back to the band edge.
+// A boost is additionally gated by the ~0.1 s probe: it applies only while
+// that probe (its levelled reading with the current AGC gain undone) is itself
+// below G - AGC_BAND_DB, so a loud return is not mis-lifted by the 3 s
+// boxcar's lag (measured: without the gate comfort-dialogue's tail settled at
+// -20.50 against a +-0.20 gate). The cut direction is untouched.
 // AGC_BAND_DB = 2.5 LU is OUR target (LRA 5.0): it lands the EBU LDR <= 5 LU
 // outcome bound on a monocular chain. No published residual-LRA floor exists
 // (EBU: "impossible and not useful to define a strict limit for LRA"), so any
@@ -262,6 +295,34 @@ var BLAST_GUARD_LIMITER_HOLD_SECONDS = 0.18;
 var AGC_BAND_DB = 2.5;
 var AGC_BOOST_CAP_DB = 6;
 var AGC_SILENCE_FLOOR_LUFS = -70;
+// Slow-window level gate (OURS/house — same status as WARM_SECONDS and the
+// onset-guard numbers: no source publishes these): the slow loop's rolling
+// window keeps only the blocks whose level lies within [-6, +15] LU of the
+// current level (the higher of the 3 s ST and the 400 ms momentary, so a loud
+// onset moves the gate at the momentary's speed while a settling program moves
+// it smoothly). Why the window needs it (measured 2026-10-19, comfort-dialogue
+// and comfort-step at 48 kHz, BEFORE the change):
+//   - the BS.1770 relative gate excludes only blocks BELOW the mean, so a
+//     loud passage pinned a quiet passage's programme mean forever: the
+//     26.02 dB-dialogue profile kept 20.78 dB of output spread and the quiet
+//     passage rose -0.79 dB (gate: >= 3.00);
+//   - at the +10 dB step the window still held 2/3 pre-step quiet at t = 70 s
+//     (levelled mean -27.90 vs the loud's -20.69), so the slow gain was ~4 LU
+//     too high and the oracle read -16.60 (gate: -20.0 +- 1.0).
+// Bounds (measured): the +15 edge must exceed comfort-pair12's 12.04 LU
+// section spread, whose AGC-boosted quiet (-23.0 LUFS, a within-program
+// passage) must still enter the window and pull the mean down — with 15 the
+// pair12 reads reduction 6.93 dB, quiet rise 4.66 dB, residual 5.11 LU (gates:
+// >= 4 / >= 3 / >= 3, all green); the -6 edge must stay under comfort-step's
+// 10.0 LU stale drag (with 6 the pre-step quiet leaves the loud's window and
+// the step lands at -20.40, gate +-1.0) and above comfort-varying4's 4.0 LU
+// in-band sections (with 6 the varying4 section readings are unchanged:
+// reduction -0.27 dB, residual 4.27 LU, gate <= 1.0 / >= 3.0). After the
+// change the dialogue's 26 dB loud blocks leave the quiet's window, so the
+// AGC's +6 (capped) plus the slow loop's clamped +6 lift the quiet passage by
+// 6.74 dB and the settled tail reads -20.00 (gate +-0.20).
+var SLOW_LOCK_LO_DB = 6;
+var SLOW_LOCK_HI_DB = 15;
 
 var WARM_SECONDS = 0;
 // No warm-up hold: the dead-band levelling (3 s short-term AGC, first gated
@@ -458,6 +519,20 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.integratedLufsLev = -Infinity;
     this.hasGatedLev = false;
 
+    // Onset-guard fast probe: ~0.1 s ring of LEVELLED power (newPLev, the
+    // already-computed slow-loop detector input), fed per sample. Preallocated
+    // here; process() only reads/writes (real-time discipline).
+    this.fastWindow = Math.max(1, Math.round(FAST_ONSET_SECONDS * sr));
+    this.fastRing = new Float64Array(this.fastWindow);
+    this.fastIndex = 0;
+    this.fastCount = 0;
+    this.fastSum = 0;
+    // Cold-start pre-cut in dB: CUT ONLY (<= 0), ratchets down only while the
+    // session is cold (!hasGatedLev, fast window full). Quiet content and
+    // digital silence leave it at 0 (clamped, never boost; silence energy 0
+    // reads -Infinity and clamps to 0 — no NaN path).
+    this.onsetCutDb = 0;
+
     this.delayFrames = Math.max(128, Math.round(sr * LOOKAHEAD_SECONDS));
     this.bufferLength = 1;
     while (this.bufferLength < this.delayFrames + 2048) this.bufferLength <<= 1;
@@ -468,9 +543,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.writeIndex = 0;
     this.limiterAttackFrames = Math.max(1, Math.round(sr * LIMITER_ATTACK_SECONDS));
     this.limiterReleaseCoeff = Math.exp(-1 / (sr * LIMITER_RELEASE_SECONDS));
-    this.blastGuardReleaseCoeff = Math.exp(-1 / (sr * BLAST_GUARD_LIMITER_RELEASE_SECONDS));
-    this.blastGuardHoldFrames = Math.max(1, Math.round(sr * BLAST_GUARD_LIMITER_HOLD_SECONDS));
-    this.blastHoldRemaining = 0;
     this.currentLimiterGain = 1;
 
     var ph = buildInterpPhases();
@@ -502,7 +574,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     // measured.
     this.trimTargetDb = 0;
     this.trimCurrentDb = 0;
-    this.blastGuard = false;
     this.mode = 'normalize';
     this.currentLoudnessDb = 0;
     this.totalFrames = 0;
@@ -558,11 +629,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
         self.trimTargetDb = Math.round(trimRaw * 2) / 2;
         return;
       }
-      if (data.type === 'set-blast-guard') {
-        self.blastGuard = Boolean(data.blastGuard);
-        if (!self.blastGuard) self.blastHoldRemaining = 0;
-        return;
-      }
       if (data.type === 'start-normalizing') return;
       if (data.type === 'set-target-lufs') {
         var t = Number(data.targetLufs);
@@ -601,8 +667,10 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     // mirrors, and warm (re-armed: totalFrames is KEPT so warm re-asserts as
     // soon as the new mode gates, ~400 ms, instead of a 3 s unity drift).
     // DELIBERATELY PRESERVED for gain continuity: currentLoudnessDb/
-    // currentAgcDb/appliedGainDb (no snap to unity), trim (a user setting), the full audio path (channelBuffers/writeIndex/
-    // limiterTargets/currentLimiterGain/blastHoldRemaining), both true-peak
+    // currentAgcDb/appliedGainDb (no snap to unity), the onset pre-cut
+    // onsetCutDb (no snap: the cold-window desired gain stays where it is),
+    // trim (a user setting), the full audio path (channelBuffers/writeIndex/
+    // limiterTargets/currentLimiterGain), both true-peak
     // detector histories (interpZ/interpZi/outInterpZ/outInterpZi) and
     // truePeakTrack (decaying output-peak hold), totalFrames, settings/mode,
     // meter cadence and scratch (overwritten per sample).
@@ -636,6 +704,14 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.integratedEnergyLev = 0;
     this.integratedLufsLev = -Infinity;
     this.hasGatedLev = false;
+    // Onset-guard fast probe is measurement: ring/sum/count clear with the
+    // rest. onsetCutDb is PRESERVED (see above): clearing it to 0 would snap
+    // the cold-window desired gain to unity; the fresh probe ratchets it down
+    // again from the preserved value once the fast window refills.
+    this.fastRing.fill(0);
+    this.fastIndex = 0;
+    this.fastCount = 0;
+    this.fastSum = 0;
     this.warm = false;
     this.momentaryLufs = -Infinity;
     this.shortTermLufs = -Infinity;
@@ -653,7 +729,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
 
   resetMeter() {
     // Full state clear (settings kept: sr, K coeffs, block sizes, limiter
-    // timing, interp tables, targetLufs/trim/blastGuard/mode). After
+    // timing, interp tables, targetLufs/trim/mode). After
     // this the processor is indistinguishable from a freshly constructed
     // one with the same settings: every per-block history is zeroed, not
     // just the metering aggregates. In particular the true-peak detector
@@ -693,6 +769,13 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.integratedEnergyLev = 0;
     this.integratedLufsLev = -Infinity;
     this.hasGatedLev = false;
+    // Onset-guard state clears with everything else (fresh-constructed
+    // equivalence: reset-then-render is bit-identical to a fresh instance).
+    this.fastRing.fill(0);
+    this.fastIndex = 0;
+    this.fastCount = 0;
+    this.fastSum = 0;
+    this.onsetCutDb = 0;
     this.totalFrames = 0;
     this.warm = false;
     this.momentaryLufs = -Infinity;
@@ -706,7 +789,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     for (i = 0; i < this.bufferLength; i++) this.limiterTargets[i] = 1;
     this.writeIndex = 0;
     this.currentLimiterGain = 1;
-    this.blastHoldRemaining = 0;
     for (ch = 0; ch < 6; ch++) this.interpZ[ch].fill(0);
     this.interpZi = 0;
     for (ch = 0; ch < 6; ch++) this.outInterpZ[ch].fill(0);
@@ -733,10 +815,6 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.meterMsg.userTrimDb = this.trimCurrentDb;
     this.meterMsg.mode = this.mode;
     this.meterMsg.warm = false;
-  }
-
-  ceilingLinear() {
-    return this.blastGuard ? BLAST_GUARD_CEILING_LINEAR : CEILING_LINEAR;
   }
 
   recomputeIntegrated() {
@@ -791,12 +869,27 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     }
     var now = this.totalFrames;
     var maxAge = this.slowWindowSamples;
+    // Level gate (OURS/house — see SLOW_LOCK_LO_DB): only blocks whose level
+    // lies within [-6, +15] LU of the current level (the higher of the 3 s ST
+    // and the momentary) describe the programme the window is averaging; a
+    // loud passage can no longer pin a quiet one's mean, and a level change
+    // drops the stale passage instead of dragging it into the mean.
+    var stRef = this.shortTermLufs;
+    if (Number.isFinite(this.momentaryLufs) && this.momentaryLufs > stRef) stRef = this.momentaryLufs;
+    var lockOn = Number.isFinite(stRef);
+    var lockLo = stRef - SLOW_LOCK_LO_DB;
+    var lockHi = stRef + SLOW_LOCK_HI_DB;
     var sum = 0;
     var absN = 0;
     var i;
     for (i = 0; i < this.blockCountLev; i++) {
       if (now - this.blockSampleLev[i] > maxAge) continue;
-      sum += this.blocksLev[i];
+      var e0 = this.blocksLev[i];
+      if (lockOn) {
+        var l0 = energyToLoudness(e0);
+        if (l0 < lockLo || l0 > lockHi) continue;
+      }
+      sum += e0;
       absN++;
     }
     if (absN === 0) {
@@ -812,6 +905,10 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     for (i = 0; i < this.blockCountLev; i++) {
       if (now - this.blockSampleLev[i] > maxAge) continue;
       var e = this.blocksLev[i];
+      if (lockOn) {
+        var l1 = energyToLoudness(e);
+        if (l1 < lockLo || l1 > lockHi) continue;
+      }
       if (e >= relThresh) {
         sumG += e;
         cntG++;
@@ -925,11 +1022,8 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
   stepLimiter(scheduledGain) {
     if (scheduledGain < this.currentLimiterGain) {
       this.currentLimiterGain = scheduledGain;
-    } else if (this.blastGuard && this.blastHoldRemaining > 0) {
-      this.blastHoldRemaining -= 1;
     } else {
-      var coeff = this.blastGuard ? this.blastGuardReleaseCoeff : this.limiterReleaseCoeff;
-      this.currentLimiterGain = 1 + (this.currentLimiterGain - 1) * coeff;
+      this.currentLimiterGain = 1 + (this.currentLimiterGain - 1) * this.limiterReleaseCoeff;
     }
     return this.currentLimiterGain;
   }
@@ -945,7 +1039,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     if (outCh > 6) outCh = 6;
 
     var sr = this.sr;
-    var ceiling = this.ceilingLinear();
+    var ceiling = CEILING_LINEAR;
     var marginLin = dbToGain(-TP_DETECTOR_MARGIN_DB);
     var effCeiling = ceiling * marginLin;
 
@@ -991,31 +1085,51 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     // trim is NOT here — it joins the delay line below, inside the detector's
     // view, outside every loudness measurement.
     var wantWarmLev = this.totalFrames >= Math.round(sr * WARM_SECONDS) && this.hasGatedLev;
+    // Onset-guard update (cold only, fast window full): CUT-ONLY pre-cut from
+    // the fast levelled probe toward the fixed target; ratchets down only, so
+    // quiet content (want >= 0) and digital silence (energy 0 reads -Infinity,
+    // want +Infinity) both leave onsetCutDb at 0. NaN-safe: a non-finite want
+    // fails the <= test and clamps to 0, and the ratchet compares finite
+    // values only.
+    if (!this.hasGatedLev && this.fastCount >= this.fastWindow) {
+      var fastLevelDb = energyToLoudness(this.fastSum / this.fastWindow);
+      var wantOnset = this.targetLufs - fastLevelDb;
+      var onsetCut = 0;
+      if (wantOnset <= 0) {
+        onsetCut = wantOnset < -MAX_CUT_DB ? -MAX_CUT_DB : wantOnset;
+      }
+      if (onsetCut < this.onsetCutDb) this.onsetCutDb = onsetCut;
+    }
     var desiredLoudnessDb = 0;
     if (wantWarmLev) {
       var need = this.targetLufs - this.integratedLufsLev;
-      var maxBoost = this.blastGuard ? BLAST_GUARD_MAX_BOOST_DB : MAX_BOOST_DB;
-      var maxCut = this.blastGuard ? BLAST_GUARD_MAX_CUT_DB : MAX_CUT_DB;
-      var normMax = maxBoost - this.currentAgcDb;
-      var normMin = -maxCut - this.currentAgcDb;
+      var normMax = MAX_BOOST_DB - this.currentAgcDb;
+      var normMin = -MAX_CUT_DB - this.currentAgcDb;
       if (need > normMax) need = normMax;
       if (need < normMin) need = normMin;
       desiredLoudnessDb = need;
-    } else {
-      desiredLoudnessDb = 0;
+    } else if (!this.hasGatedLev) {
+      // Cold window: the onset pre-cut REPLACES the hold-at-current value, so
+      // a loud onset is cut from ~100 ms instead of passing uncut until the
+      // first gated block. Before the fast window is full onsetCutDb is still
+      // 0 and this holds unity exactly like before. Handoff: when hasGatedLev
+      // first becomes true the slow loop above takes over FROM the current
+      // gain — no snap, no reset of currentLoudnessDb.
+      desiredLoudnessDb = this.onsetCutDb;
     }
     // Silence gate (§6: silence holds the last gain, never re-targets): with
     // no gated program inside the rolling window — startup, post-reset, or a
-    // silence long enough to empty the window — the slow loop holds its last
-    // gain instead of slewing toward unity or toward stale retained history.
+    // silence long enough to empty the window - the cold-window desired gain
+    // below (the frozen onset pre-cut, i.e. the last gain: silence probes
+    // +Infinity-want and clamps to 0, so the ratchet keeps the stale pre-cut)
+    // instead of slewing toward unity or toward stale retained history.
     // (During shorter silences the window still holds program blocks but no
     // new block is retained, so integratedLufsLev is frozen and the slew
     // already holds; the AGC branch holds the same way via its own gate.)
-    if (!this.hasGatedLev) desiredLoudnessDb = this.currentLoudnessDb;
-
     var tc;
     if (desiredLoudnessDb > this.currentLoudnessDb) tc = UP_TC_SECONDS;
-    else tc = this.blastGuard ? BLAST_GUARD_DOWN_TC_SECONDS : DOWN_TC_SECONDS;
+    else if (!this.hasGatedLev) tc = FAST_ONSET_TC_SECONDS;
+    else tc = DOWN_TC_SECONDS;
     var smooth = Math.exp(-frameCount / (sr * tc));
     var prevLoudnessDb = this.currentLoudnessDb;
     this.currentLoudnessDb = desiredLoudnessDb + (this.currentLoudnessDb - desiredLoudnessDb) * smooth;
@@ -1071,6 +1185,19 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
             var sgnAgc = diffAgc < 0 ? -1 : 1;
             agcTargetDb = -(diffAgc - sgnAgc * AGC_BAND_DB);
             if (agcTargetDb > AGC_BOOST_CAP_DB) agcTargetDb = AGC_BOOST_CAP_DB;
+            // BOOST GATE, fast probe (OURS/house, measured 2026-10-19): the
+            // 3 s ST boxcar lags a loud return, so the boost stayed +6 for
+            // ~1.5 s after comfort-dialogue's 20 s loud return and those
+            // lifted samples pushed the settled tail to -20.50 (gate +-0.20).
+            // A boost is therefore applied only while the ~0.1 s probe is
+            // itself below the programme mean's dead-band edge (raw domain;
+            // the probe's levelled reading has the AGC's current gain undone
+            // to compare like with like). The cut direction is untouched (S4).
+            if (agcTargetDb > 0 && this.fastCount >= this.fastWindow) {
+              var fastLevDb = energyToLoudness(this.fastSum / this.fastWindow);
+              var fastRawGate = Number.isFinite(fastLevDb) ? fastLevDb - this.currentAgcDb : -Infinity;
+              if (fastRawGate > this.integratedLufs - AGC_BAND_DB) agcTargetDb = 0;
+            }
           }
         } else {
           agcTargetDb = this.currentAgcDb;
@@ -1080,8 +1207,8 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       // the slow gain's current value, so agc + norm never exceeds the clamp
       // even when the AGC jumps (e.g. quiet -> loud) while the slow gain is
       // frozen. The norm side is capped symmetrically above.
-      var agcCapMax = (this.blastGuard ? BLAST_GUARD_MAX_BOOST_DB : MAX_BOOST_DB) - this.currentLoudnessDb;
-      var agcCapMin = -(this.blastGuard ? BLAST_GUARD_MAX_CUT_DB : MAX_CUT_DB) - this.currentLoudnessDb;
+      var agcCapMax = MAX_BOOST_DB - this.currentLoudnessDb;
+      var agcCapMin = -MAX_CUT_DB - this.currentLoudnessDb;
       if (agcTargetDb > agcCapMax) agcTargetDb = agcCapMax;
       if (agcTargetDb < agcCapMin) agcTargetDb = agcCapMin;
       // Direct drive: the gain follows ST per sample with NO extra smoothing
@@ -1137,6 +1264,14 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       }
       if (!Number.isFinite(newP)) newP = 0;
       if (!Number.isFinite(newPLev)) newPLev = 0;
+      // Onset-guard fast probe: levelled power into the ~0.1 s ring (one
+      // extra ring + sum per sample — owner-accepted CPU cost).
+      var fastOut = this.fastCount >= this.fastWindow ? this.fastRing[this.fastIndex] : 0;
+      this.fastSum += newPLev - fastOut;
+      this.fastRing[this.fastIndex] = newPLev;
+      this.fastIndex++;
+      if (this.fastIndex >= this.fastWindow) this.fastIndex = 0;
+      if (this.fastCount < this.fastWindow) this.fastCount++;
 
       var shortOut = 0;
       var blockOut = 0;
@@ -1238,16 +1373,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       if (!Number.isFinite(framePeak)) framePeak = 0;
       if (framePeak > effCeiling) {
         var need = effCeiling / framePeak;
-        if (this.blastGuard) {
-          if (this.blastHoldRemaining < this.blastGuardHoldFrames) {
-            this.blastHoldRemaining = this.blastGuardHoldFrames;
-          }
-        }
         this.scheduleLimiter(this.writeIndex, need);
-      } else if (this.blastGuard && framePeak > ceiling * 0.5) {
-        if (this.blastHoldRemaining < this.blastGuardHoldFrames) {
-          this.blastHoldRemaining = Math.max(this.blastHoldRemaining, 1);
-        }
       }
 
       var limGain = this.stepLimiter(this.limiterTargets[readIndex]);

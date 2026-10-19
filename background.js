@@ -9,7 +9,7 @@ const WEBSTORE_URL_PATTERN = /^https?:\/\/(chrome\.google\.com\/webstore|microso
 const pendingSessionStates = new Map();
 
 // Per-site single-key storage: each site lives under ONE top-level key
-// `site:<siteKey>` holding { enabled, gainDb, blastGuard, seq, mirror }.
+// `site:<siteKey>` holding { enabled, gainDb, seq, mirror }.
 // Platform fact (RESEARCH §2.1): `chrome.storage.local.set` guarantees only
 // that "Any other key/value pairs in storage will not be affected" —
 // top-level-key granularity. A write to `site:a.com` therefore cannot touch
@@ -43,7 +43,7 @@ function withStorageWrite(task) {
 // only the field the user just changed). The background applies the
 // intent's fields to the live record and writes the whole record back in
 // one `set` (a partial `set` is a delete — see RESEARCH §10). Top-level
-// `enabled`/`gainDb`/`blastGuard` on the message are legacy and are IGNORED
+// `enabled`/`gainDb` on the message are legacy and are IGNORED
 // when `set` is present; when `set` is absent they are treated as the intent
 // for backward compatibility only.
 // Ordering is last-accepted-write-wins: every accepted write bumps the
@@ -71,7 +71,7 @@ const SITE_SEQ_KEY = 'siteSeq';
  * (the pre-fix historical diverge repair). Afterwards the per-site key
  * exists and is preferred, so a stale legacy mirror can never resurrect.
  * @param {string} siteKey normalized site key
- * @returns {Promise<{ record: { enabled: boolean, gainDb: number, blastGuard: boolean, seq: number, mirror: boolean }, fromLegacy: boolean }>}
+ * @returns {Promise<{ record: { enabled: boolean, gainDb: number, seq: number, mirror: boolean }, fromLegacy: boolean }>}
  */
 async function readSiteRecord(siteKey) {
   const perKey = backgroundShared.siteStorageKey(siteKey);
@@ -118,7 +118,7 @@ async function readSiteRecord(siteKey) {
  * Persist one per-site record with a SINGLE `set` carrying a SINGLE
  * top-level key. No other key is touched.
  * @param {string} siteKey normalized site key
- * @param {{ enabled: boolean, gainDb: number, blastGuard: boolean, seq: number, mirror: boolean }} record
+ * @param {{ enabled: boolean, gainDb: number, seq: number, mirror: boolean }} record
  */
 async function writeSiteRecord(siteKey, record) {
   const perKey = backgroundShared.siteStorageKey(siteKey);
@@ -130,7 +130,7 @@ async function writeSiteRecord(siteKey, record) {
 /**
  * Extract the field-level intent from a SET_SITE_STATE message. New callers
  * send `set` with ONLY the changed fields (e.g. `{ gainDb: 6 }`). When `set`
- * is present, top-level `enabled`/`gainDb`/`blastGuard` are IGNORED — they
+ * is present, top-level `enabled`/`gainDb` are IGNORED — they
  * are a cached snapshot that would let a sibling popup overwrite unrelated
  * newer fields. When `set` is absent, fall back to top-level fields for
  * backward compatibility with older callers/tests.
@@ -144,14 +144,12 @@ function extractIntentSet(message) {
     const out = {};
     if (Object.prototype.hasOwnProperty.call(src, 'enabled')) out.enabled = Boolean(src.enabled);
     if (Object.prototype.hasOwnProperty.call(src, 'gainDb')) out.gainDb = backgroundShared.clampGainDb(src.gainDb);
-    if (Object.prototype.hasOwnProperty.call(src, 'blastGuard')) out.blastGuard = Boolean(src.blastGuard);
     return out;
   }
   /** @type {Record<string, unknown>} */
   const legacy = {};
   if (Object.prototype.hasOwnProperty.call(message, 'enabled')) legacy.enabled = Boolean(message.enabled);
   if (Object.prototype.hasOwnProperty.call(message, 'gainDb')) legacy.gainDb = backgroundShared.clampGainDb(message.gainDb);
-  if (Object.prototype.hasOwnProperty.call(message, 'blastGuard')) legacy.blastGuard = Boolean(message.blastGuard);
   return legacy;
 }
 
@@ -184,14 +182,13 @@ async function migrateActiveSitesOnce() {
       );
       if (existing[perKey] && typeof existing[perKey] === 'object') {
         // Per-site already exists: only clear when it already reflects this
-        // legacy entry (same enabled/gain/guard) — i.e. the legacy was
+        // legacy entry (same enabled/gain) — i.e. the legacy was
         // consumed by an earlier migration (e.g. GET_SITE_STATE). Otherwise
         // leave it: clearing un-consumed data is data loss.
         if (!migrated) continue;
         const cur = backgroundShared.normalizeSiteRecord(existing[perKey]);
         if (cur.enabled !== migrated.enabled
-          || cur.gainDb !== migrated.gainDb
-          || cur.blastGuard !== migrated.blastGuard) continue;
+          || cur.gainDb !== migrated.gainDb) continue;
         consumed.push(rawKey);
         continue;
       }
@@ -334,7 +331,6 @@ async function tryApplyPendingSessionState(tabId, tab) {
       siteKey: entry.siteKey,
       enabled: Boolean(entry.enabled),
       gainDb: entry.gainDb,
-      blastGuard: Boolean(entry.blastGuard),
       // Genuine transient: the tab installs a session override for this and
       // only this flagged shape. Ordinary persisted saves arrive unflagged and
       // read storage instead.
@@ -436,7 +432,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // the same write. Last-accepted-write-wins: nothing is rejected on
         // ordering grounds; a delayed toggle that arrives later flips whatever
         // is live at arrival time (documented trade).
-        /** @type {{ seq: number, nextEnabled: boolean, gainDb: number, blastGuard: boolean }} */
+        /** @type {{ seq: number, nextEnabled: boolean, gainDb: number }} */
         const outcome = await withStorageWrite(async () => {
           const { record: storedRec } = await readSiteRecord(siteKey);
           const nextEnabled = !storedRec.enabled;
@@ -444,14 +440,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const next = backgroundShared.normalizeSiteRecord({
             enabled: nextEnabled,
             gainDb: storedRec.gainDb,
-            blastGuard: storedRec.blastGuard,
             seq: nextSeq,
             mirror: nextEnabled,
           });
           // Single top-level key, single set: settings + mirror + sequence
           // can never diverge.
           await writeSiteRecord(siteKey, next);
-          return { seq: nextSeq, nextEnabled, gainDb: next.gainDb, blastGuard: next.blastGuard };
+          return { seq: nextSeq, nextEnabled, gainDb: next.gainDb };
         });
         if (outcome.nextEnabled) {
           await syncExistingTabsForSite(siteKey);
@@ -461,7 +456,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ok: true,
           enabled: outcome.nextEnabled,
           gainDb: outcome.gainDb,
-          blastGuard: outcome.blastGuard,
           siteKey,
           seq: outcome.seq,
         };
@@ -477,7 +471,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // sibling popup can never overwrite an unrelated newer field.
         const intent = extractIntentSet(/** @type {Record<string, unknown>} */ (message));
 
-        /** @type {{ seq: number, enabled: boolean, gainDb: number, blastGuard: boolean, enabledApplied: boolean }} */
+        /** @type {{ seq: number, enabled: boolean, gainDb: number, enabledApplied: boolean }} */
         const applied = await withStorageWrite(async () => {
           const { record: storedRec } = await readSiteRecord(siteKey);
           // Last-accepted-write-wins: every intent field applies to the live
@@ -487,23 +481,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           // ignored (never compared, never persisted).
           let enabled = storedRec.enabled;
           let gainDb = storedRec.gainDb;
-          let blastGuard = storedRec.blastGuard;
           let enabledApplied = false;
           if (Object.prototype.hasOwnProperty.call(intent, 'enabled')) {
             enabled = Boolean(intent.enabled);
             enabledApplied = true;
           }
           if (Object.prototype.hasOwnProperty.call(intent, 'gainDb')) gainDb = backgroundShared.clampGainDb(intent.gainDb);
-          if (Object.prototype.hasOwnProperty.call(intent, 'blastGuard')) blastGuard = Boolean(intent.blastGuard);
           const requestedEnabledChange = Object.prototype.hasOwnProperty.call(intent, 'enabled');
           const nextSeq = storedRec.seq + 1;
           const next = backgroundShared.normalizeSiteRecord({
             enabled,
             gainDb,
-            blastGuard,
             seq: nextSeq,
             // The mirror follows `enabled` in the SAME per-site write; a
-            // gain/blast-guard-only patch leaves it untouched.
+            // gain-only patch leaves it untouched.
             mirror: requestedEnabledChange ? enabled : storedRec.mirror,
           });
 
@@ -517,7 +508,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             await writeSiteRecord(siteKey, next);
             await setPendingSessionState(message.tabId, null);
           }
-          return { seq: persist ? nextSeq : storedRec.seq, enabled: next.enabled, gainDb: next.gainDb, blastGuard: next.blastGuard, enabledApplied };
+          return { seq: persist ? nextSeq : storedRec.seq, enabled: next.enabled, gainDb: next.gainDb, enabledApplied };
         });
 
         const shouldActivateCurrentTab = applied.enabledApplied && applied.enabled;
@@ -531,7 +522,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               siteKey,
               enabled: applied.enabled,
               gainDb: applied.gainDb,
-              blastGuard: applied.blastGuard,
             },
           );
         }
@@ -543,7 +533,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ok: true,
           enabled: applied.enabled,
           gainDb: applied.gainDb,
-          blastGuard: applied.blastGuard,
           siteKey,
           seq: applied.seq,
           activation,
@@ -551,7 +540,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       case 'GET_SITE_STATE': {
         const hostname = String(message.hostname || message.siteKey || '');
-        if (!hostname) return { ok: true, enabled: false, gainDb: 0, blastGuard: false };
+        if (!hostname) return { ok: true, enabled: false, gainDb: 0 };
         const siteKey = backgroundShared.getSiteKey(hostname);
 
         const reconciled = await withStorageWrite(async () => {
@@ -568,7 +557,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ok: true,
           enabled: reconciled.enabled,
           gainDb: reconciled.gainDb,
-          blastGuard: reconciled.blastGuard,
           siteKey,
           seq: reconciled.seq,
         };
@@ -696,7 +684,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
                   siteKey,
                   enabled: newToggles[siteKey],
                   gainDb: record.gainDb,
-                  blastGuard: record.blastGuard,
                 }, { frameId: 0 }).catch(() => {});
               }
             });
@@ -722,8 +709,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
       : null;
     if (!newRec) continue;
     if (oldRec && oldRec.enabled === newRec.enabled
-      && oldRec.gainDb === newRec.gainDb
-      && oldRec.blastGuard === newRec.blastGuard) continue;
+      && oldRec.gainDb === newRec.gainDb) continue;
     chrome.tabs.query({}, (tabs) => {
       void (async () => {
         let current;
@@ -745,7 +731,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
               siteKey,
               enabled: current.enabled,
               gainDb: current.gainDb,
-              blastGuard: current.blastGuard,
             }, { frameId: 0 }).catch(() => {});
           }
         });

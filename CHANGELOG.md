@@ -5,17 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [5.4.1] - 2026-10-19
 
 ### Changed
 
+- Startup is seamless: a silence-until-routed attach guard mutes a media element
+  until its graph is routed (1.5 s fallback restores its previous muted value;
+  on failure the element plays raw as before), the media session (AudioContext +
+  AudioWorklet module + node) is pre-warmed before the first media element
+  plays, and a cold-start, cut-only onset guard driven by a ~100 ms levelled
+  power probe with a fast ~0.12 s log-domain slew hands over continuously to the
+  slow loop — so a loud onset is cut toward the target from the start instead of
+  passing uncut for ~400 ms. Measured 2026-10-19 on comfort-loud: the old chain
+  was still only −1.55 dB down at 0.5 s (−6 dB not reached until ~0.95 s); the
+  guard reads −9.3 dB by 0.5 s, −9.7 dB by 1.0 s, settled −10.00, never deeper
+  than settled + 1.5 dB, and quiet onsets are untouched.
 - Within-program levelling is now a dead-band AGC on the raw input
   (mechanism: ffmpeg `loudnorm` `INNER_FRAME` — inside ±2.5 LU of the program
   no adaptation is applied at all, per EBU R 128 s4 clause k; outside, the
   short-term spread is compressed back to the band edge), replacing the Dolby
   Film Standard static curve. Boost capped at the published +6 dB Film max;
-  the +12/−20 dB clamp (+6/−24 dB Blast Guard) still binds the total program
-  gain. The 4-LU varying program keeps its range; the 12-dB pair lands near
+  the +12/−20 dB clamp still binds the total program gain. The 4-LU varying
+  program keeps its range; the 12-dB pair lands near
   the LDR ≤ 5 LU outcome.
 - The user trim is now written into the limiter delay line before the
   detector (ffmpeg `loudnorm` offset topology, EBU Tech 3344 device order),
@@ -23,14 +34,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes effect after the 5 ms lookahead flushes instead of in the same
   render quantum.
 
+### Removed
+
+- Blast Guard, entirely (owner-directed): the popup control `#blast-guard`, the
+  per-site record field `blastGuard`, the hook message `SET_BLAST_GUARD`, and
+  the worklet's `set-blast-guard` inbound with its −2 dBTP ceiling, clamps,
+  release and hold. The single −1 dBTP true-peak ceiling remains. Legacy
+  per-site records that still carry `blastGuard` read cleanly — the field is
+  ignored and dropped on the next write.
+
 ### Fixed
 
+- Quiet-passage lift and level-step recovery are fixed: the dialogue
+  fixture's quiet section rises +6.74 dB, its spread shrinks 12.77 dB
+  (26.02 → 13.25), the tail sits at −20.00 LUFS, and the step lands at
+  −20.40 LUFS (delta −0.40, tolerance ±1.0) — verified offline in
+  qa/loudness-verify.cjs (release gate).
 - Trim-step ceiling punch-through (silence, burst, then +12 dB trim):
-  was +1.6 dBTP normal / +0.6 dBTP Blast Guard with rail hits; now at or
-  below both ceilings with zero rail hits at both sample rates.
-- Level-step recovery (60 s quiet then 30 s loud) is now caught by the ~3 s
-  AGC stage instead of riding hot for seconds: within ±2 LU of target from
-  ~3 s after the step, settled tail on target.
+  was +1.6 dBTP with rail hits; now at or below the ceiling with zero rail
+  hits at both sample rates.
+- Level-step recovery (60 s quiet then 30 s loud) no longer rides hot for
+  seconds; the measured outcome under the release gate is in the Fixed entry
+  above (ST@70 -20.40 LUFS, delta -0.40, gate +-1.0 LU).
 
 ## [5.4.0] - 2026-10-18
 

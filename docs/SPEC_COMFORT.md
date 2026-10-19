@@ -82,10 +82,9 @@ maximum true peak only), EBU R 128 s2 clause k, EBU R 128 s4 clauses
 (l)/(m), and the published Spotify limiter (−1 dB sample, 5 ms attack,
 100 ms decay).
 
-S5. True peak never exceeds −1 dBTP normal, −2 dBTP under Blast Guard.
-Hard-clip count is 0. Sources: EBU R 128, AES TD1006/TD1008 and Apple
-(−1 dBTP); ATSC A/85 and Netflix (−2 dBTP); AES TD1008 (§1.2) and EBU
-R 128 s2 clause k for the limiter-ceiling rule.
+S5. True peak never exceeds −1 dBTP. Hard-clip count is 0. Sources:
+EBU R 128, AES TD1006/TD1008 and Apple (−1 dBTP); AES TD1008 (§1.2)
+and EBU R 128 s2 clause k for the limiter-ceiling rule.
 
 ## 5. Requirements, ours
 
@@ -115,12 +114,39 @@ choices. (EBU R 128 publishes ±1.0 LU as a broadcast live-delivery
 tolerance; that governs delivery QC, not this chain, so the numbers
 here stay in this section.)
 
+H5. Cold-start onset convergence. Before the first gated levelled
+block the session is cold and the slow loop has no measurement. While
+cold, a cut-only pre-cut driven by a ~100 ms levelled power probe,
+slewed with a fast ~0.12 s log-domain time constant and ratcheting
+down only, cuts a loud onset toward the target from the start; the
+slow loop then takes over from the current gain with no snap
+(continuous handoff), and the guard never boosts, so a quiet onset is
+not moved. Measured offline 2026-10-19 on a loud onset from cold: the
+pre-guard chain was −1.55 dB down at 0.5 s (time to −6 dB 0.949 s);
+the guard reads −9.30 dB at 0.5 s, −9.70 dB at 1.0 s, settled −10.00;
+the quiet onset moves 0.000 dB. No source publishes a cold-start
+number; this is house wiring and these numbers stay house.
+
+H6. Within-program lift of sub-relative-gate passages. Passages above
+−70 LUFS but below the −10 LU relative gate are lifted by the
+levelling stage, not held. Two gates make the lift land: within the
+slow loop's 30 s window only the blocks whose level lies within
+[−6, +15] LU of the current level count (`SLOW_LOCK_LO_DB` /
+`SLOW_LOCK_HI_DB`), and the AGC's boost applies only while the ~0.1 s
+levelled probe is itself below the programme mean's dead-band edge —
+without those gates a loud passage pinned a quiet passage's mean and
+the AGC's boost lagged a loud return. Measured offline 2026-10-19 on
+the dialogue fixture: the quiet section rises +6.74 dB and the tail
+sits at −20.00 LUFS. AES TD1008's "Upward compression is the
+preferred approach for raising low level passages" is directional
+backing, recorded in `docs/RESEARCH_QUIET_LIFT.md`; no source
+publishes these numbers, so they stay house.
+
 ## 6. Failure behavior
 
 Silence holds the last gain; it never re-targets on noise. Gain
 pressure against the ceiling sheds into the limiter; the ceiling
-clauses in S5 hold under maximum trim. Blast Guard tightens the
-ceiling to −2 dBTP and the program-gain clamp. A trim outside
+clauses in S5 hold under maximum trim. A trim outside
 −12…+12 dB is ignored.
 
 ## 7. Acceptance evidence
@@ -148,13 +174,37 @@ output spread equals input spread within ±0.5 LU (H4).
 
 A4. Ceiling under trim. Fixture: a near-ceiling transient burst, with
 the trim at 0 dB and at +12 dB. Window: oracle true-peak over the
-burst plus hard-clip counter. Threshold: ≤ −1 dBTP normal, ≤ −2 dBTP
-under Blast Guard, 0 clips in both trim cases (S1, S5).
+burst plus hard-clip counter. Threshold: ≤ −1 dBTP, 0 clips in both
+trim cases (S1, S5).
 
 A5. Step recovery. Fixture: 60 s of quiet program followed by 30 s
 ≈10 LU louder. Window: output short-term loudness sampled each second
 after the step, oracle-measured. Threshold: back within ±1.0 LU of
 target within 10 s (H2), driven by the AGC stage (S4).
+
+A6. Cold-start onset. Fixture: a loud onset from a cold session
+(comfort-loud); controls: a quiet onset (comfort-quiet) and digital
+silence. Window: the applied-gain trace over the first second after
+the onset, plus the settled tail, measured on captured output.
+Threshold: the onset is cut toward the target from the start (H5);
+the quiet onset is not moved; silence stays bit-zero. Measured
+offline 2026-10-19: pre-guard chain −1.55 dB at 0.5 s (time to −6 dB
+0.949 s); guard −9.30 dB at 0.5 s, −9.70 dB at 1.0 s, settled −10.00;
+quiet onset 0.000 dB. Gate: the ONSET section of
+`qa/loudness-verify.cjs`, including the negative control (the
+pre-change worklet must fail the 0.5 s bound).
+
+A7. Quiet-passage lift and step recovery. Fixtures: comfort-dialogue
+(spread and quiet lift) and comfort-step (60 s quiet then 30 s ≈10 LU
+louder), both sample rates. Window: section RMS spread and quiet rise
+for the dialogue; output short-term loudness sampled after the step;
+oracle-measured. Threshold: the quiet section rises without
+dialogue-to-program matching (S3) and the tail meets the target; the
+step returns within ±1.0 LU (H2/H4). Measured offline 2026-10-19:
+spread reduction 12.77 dB (in 26.02 → out 13.25), quiet rise
++6.74 dB, the level stage engaged, tail −20.00 LUFS; step ST@70
+−20.40 LUFS (delta −0.40, tolerance ±1.0). Gate: the LEVEL and STEP
+sections of `qa/loudness-verify.cjs`.
 
 ## 8. Controls
 
@@ -174,6 +224,11 @@ fail is not a control.
 - A5 FIRES on the 60 s/30 s step; a steady program shows no pumping
   (gain stable within ±0.5 LU), proving the slow loop is not chasing
   itself.
+- A6 FIRES on the loud onset from cold (cut to −9.30 dB by 0.5 s);
+  the quiet onset is unchanged (0.000 dB) and silence stays zero.
+- A7 FIRES on the dialogue spread (quiet rise +6.74 dB) and on the
+  60 s/30 s step; the no-pump control stands at 0.00 dB, proving the
+  slow loop and AGC are not chasing each other.
 
 Two controls are banned because review already caught them proving
 nothing. A constant-tone zero-LRA signal must never serve as the "no
