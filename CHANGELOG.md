@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.4.2] - 2026-10-21
+
+### Fixed
+
+- Per-video feed jumpscare: a new video in a scroll feed no longer starts
+  on the previous video's stale measurement. The page hook detects program
+  boundaries (new element, `loadstart`/`emptied`/`ended`-then-`play`, dirty
+  same element; pause/resume, seek, and stall stay continuity) and sends one
+  `reset-program` per live session; the worklet folds AGC into the slow gain
+  so the next video starts at the previous video's settled gain with no snap.
+- Carry-over cold gain: after the reset the cut-only branch
+  (`desired = min(slow, probe)`) re-levels from a fresh probe, so a ~6 dB
+  louder next video lands within 1.5 dB of its own settled gain by 250 ms
+  (+0.49 dB measured) and 0.5 dB by 500 ms (+0.07 dB); same-loudness moves
+  −0.00 dB; quiet next videos see no boost (+0.00 dB).
+- Cold probe is now ~50 ms with a fast ~0.08 s log-domain slew (was ~100 ms
+  / ~0.12 s): time to −6 dB 0.211 s → 0.123 s; −9.57 dB at 0.3 s, −9.90 dB
+  at 0.5 s, settled −10.00; quiet onset untouched (0.000 dB).
+
+### Added
+
+- `reset-program` worklet contract (generation-token idempotent reset;
+  AGC fold, meter/probe clear, audio-path preserve; never reset at attach
+  time) — see `docs/SPEC_FEED.md`.
+- `qa/feed-transition-qa.cjs` (F1–F6 transition harness, ALL PASS) and
+  `qa/program-boundary-qa.cjs` (page-hook handoff, 8/8 rows PASS); the
+  release gate's ONSET −6 dB check stays at 0.5 s and its negative control
+  is a guard-disabled variant (must read above −6.0 dB at 0.5 s, reads
+  −1.55 dB).
+
 ## [5.4.1] - 2026-10-19
 
 ### Changed

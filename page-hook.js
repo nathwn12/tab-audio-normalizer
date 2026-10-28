@@ -32,6 +32,17 @@
   let recoveryBurstTimer = null;
   let recoveryBurstRemaining = 0;
 
+  // Program-boundary tracking (feed fix, page-hook half): exactly one
+  // {type:'reset-program', generation} per new program to each active
+  // session's worklet port. Per-element generation counter lives on the
+  // element (__tnProgramGen) mirrored in elementProgramGenerations;
+  // the tab-wide generation is currentProgramGeneration; each session
+  // tracks lastResetGeneration / pendingResetGeneration; the active
+  // program element is activeProgramElement.
+  const elementProgramGenerations = new WeakMap();
+  let currentProgramGeneration = 0;
+  let activeProgramElement = null;
+
   /** @type {{ active: boolean, observer: (MutationObserver|null), recovering: boolean, internalWiring: boolean, creatingContext: boolean, gainDb: number, lastError: string }} */
   const state = {
     active: false,
@@ -265,7 +276,9 @@
     HTMLMediaElement.prototype.__tnPlay = true;
 
     HTMLMediaElement.prototype.play = function (...args) {
-      if (state.active && !this.__tnWebAudio) {
+      if (state.active && (!this.__tnWebAudio || this.__tnAttached)) {
+        watchProgramBoundaries(this);
+        handleElementPlaybackStart(this);
         void attachMediaElement(this);
       }
       return originalPlay.apply(this, args);
@@ -422,6 +435,8 @@
       sources: new Set(),
       mediaElements: new Set(),
       kind,
+      lastResetGeneration: null,
+      pendingResetGeneration: null,
     };
 
     context.addEventListener?.('statechange', () => {
@@ -499,6 +514,7 @@
       routeSession(session, workletNode);
       updateSessionGain(session);
       notifySessionStart(session);
+      flushPendingProgramReset(session);
       reportStatus('HOOK_STATUS');
     } catch (e) {
       console.error('[hook] AudioWorkletNode creation failed:', e.message || e);
@@ -560,6 +576,118 @@
     try {
       session.workletNode.port.postMessage({ type: 'start-normalizing' });
     } catch {}
+    flushPendingProgramReset(session);
+  }
+
+  // Program-boundary detection. New program: first playback of a newly
+  // attached managed element; loadstart/emptied followed by playback; a
+  // different element begins playing while another was the active
+  // program; replay after ended. Not a new program: pause/resume, seek
+  // within the same program, waiting/playing buffer stall, repeated
+  // play() while already playing. Never resets at attach time; only
+  // when the element actually starts playing.
+  /** @param {any} mediaElement */
+  function watchProgramBoundaries(mediaElement) {
+    if (!mediaElement || mediaElement.__tnProgramWatched) return;
+    mediaElement.__tnProgramWatched = true;
+    try {
+      mediaElement.addEventListener('loadstart', () => markProgramDirty(mediaElement));
+      mediaElement.addEventListener('emptied', () => markProgramDirty(mediaElement));
+      mediaElement.addEventListener('ended', () => {
+        markProgramDirty(mediaElement);
+        try { mediaElement.__tnPlaying = false; } catch {}
+      });
+      mediaElement.addEventListener('pause', () => {
+        try { mediaElement.__tnPlaying = false; } catch {}
+      });
+      mediaElement.addEventListener('play', () => handleElementPlaybackStart(mediaElement));
+      mediaElement.addEventListener('playing', () => handleElementPlaybackStart(mediaElement));
+    } catch {}
+  }
+
+  /** @param {any} mediaElement */
+  function markProgramDirty(mediaElement) {
+    if (!mediaElement) return;
+    try {
+      mediaElement.__tnProgramDirty = true;
+    } catch {}
+  }
+
+  /** @param {any} mediaElement */
+  function handleElementPlaybackStart(mediaElement) {
+    if (!state.active || !mediaElement) return;
+    // Elements wired by the page through WebAudio are unmanaged; elements
+    // wired by our own attach carry __tnAttached and stay managed.
+    if (mediaElement.__tnWebAudio && !mediaElement.__tnAttached) return;
+    let isNewProgram = false;
+    try {
+      if (mediaElement !== activeProgramElement) {
+        isNewProgram = true;
+      } else if (mediaElement.__tnProgramDirty) {
+        isNewProgram = true;
+      } else {
+        isNewProgram = false;
+      }
+    } catch {
+      return;
+    }
+    if (!isNewProgram) {
+      try { mediaElement.__tnPlaying = true; } catch {}
+      return;
+    }
+    // New program: bump the per-element counter, mint one tab-wide
+    // generation, broadcast exactly once per session (or stash pending).
+    try {
+      const next = (elementProgramGenerations.get(mediaElement) || 0) + 1;
+      elementProgramGenerations.set(mediaElement, next);
+      mediaElement.__tnProgramGen = next;
+      mediaElement.__tnProgramDirty = false;
+      mediaElement.__tnPlaying = true;
+    } catch {}
+    currentProgramGeneration += 1;
+    activeProgramElement = mediaElement;
+    broadcastProgramReset(currentProgramGeneration);
+  }
+
+  function broadcastProgramReset(generation) {
+    for (const session of sessions) {
+      sendProgramResetToSession(session, generation);
+    }
+  }
+
+  function sendProgramResetToSession(session, generation) {
+    if (!session || session.lastResetGeneration === generation) return;
+    if (session.workletNode?.port) {
+      try {
+        session.workletNode.port.postMessage({ type: 'reset-program', generation });
+        session.lastResetGeneration = generation;
+        if (session.pendingResetGeneration === generation) session.pendingResetGeneration = null;
+      } catch {}
+      return;
+    }
+    // Worklet not ready: keep a single pending generation per session;
+    // never queue duplicates. A newly created worklet is already cold,
+    // so a pending reset is harmless.
+    if (session.lastResetGeneration !== generation) {
+      session.pendingResetGeneration = generation;
+    }
+  }
+
+  function flushPendingProgramReset(session) {
+    if (!session?.workletNode?.port) return;
+    let target = session.pendingResetGeneration;
+    if (target == null && currentProgramGeneration > 0 && session.lastResetGeneration !== currentProgramGeneration) {
+      target = currentProgramGeneration;
+    }
+    if (target == null || session.lastResetGeneration === target) {
+      if (session.pendingResetGeneration === target) session.pendingResetGeneration = null;
+      return;
+    }
+    try {
+      session.workletNode.port.postMessage({ type: 'reset-program', generation: target });
+      session.lastResetGeneration = target;
+    } catch {}
+    session.pendingResetGeneration = null;
   }
 
   // Silence-until-routed guard: while the extension is active, a managed media
@@ -603,6 +731,7 @@
   async function attachMediaElement(mediaElement) {
     if (!state.active || !isMediaElement(mediaElement) || mediaElement.__tnAttached) return;
     if (mediaElement.__tnWebAudio) return;
+    watchProgramBoundaries(mediaElement);
     if (/** @type {any} */ (mediaElement).__tnGuarding) return;
     // Arm synchronously (before the first await) so the patched play(), which
     // calls the original right after this, can only produce silence until routing.

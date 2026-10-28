@@ -2883,24 +2883,45 @@ function main() {
   const stepSummary = stepFails > 0 ? 'FAIL' : (stepUntested > 0 ? `${stepUntested} UNTESTED` : 'PASS');
 
   // ------------------------------------------------------------------
-  // 6d. ONSET (release 5.4.1, house H5/A6: cold-start onset convergence).
+  // 6d. ONSET (release 5.4.2, house H5/A6: cold-start onset convergence).
   // Before the first gated levelled block the slow loop has no measurement;
-  // the onset guard drives a cut-only pre-cut from a ~100 ms levelled-power
-  // probe while cold, then hands off to the slow loop from the current gain.
+  // the onset guard drives a cut-only pre-cut from a ~50 ms levelled-power
+  // probe (FAST_ONSET_SECONDS 0.05, was ~100 ms in 5.4.1) while cold, slewed
+  // with a fast ~0.08 s log-domain TC (was ~0.12 s), then hands off to the
+  // slow loop from the current gain.
   // Method: fresh processor per fixture, feed the onset signal in 128-frame
   // quanta (same silent node:vm pattern as every other render), sample
   // proc.telemetry.appliedGainDb per quantum (the documented surface).
   // (a) loud onset (comfort-loud at 48 kHz + comfort-loud-44100 at 44.1 kHz):
-  //     appliedGainDb <= -6.0 dB by t=0.5 s; <= -8.0 dB by t=1.0 s; settled
+  //     appliedGainDb <= -6.0 dB by t=0.5 s (original bound, restored
+  //     2026-10-21 after a 0.3 s tightening proved unusable — see (c));
+  //     <= -8.0 dB by t=1.0 s; settled
   //     tail within +-1.0 LU of -20 (oracle on the settled-tail slice, same
   //     settle machinery as the closed loop); never deeper than
   //     (settled gain - 1.5 dB).
+  //     Measured offline 2026-10-21 (48 kHz): -9.90 dB at 0.5 s, -9.96 dB
+  //     at 1.0 s, time to -6 dB 0.123 s, to -8 dB 0.179 s, settled -10.00
+  //     (44.1 kHz: -9.90 at 0.5 s, -9.96 at 1.0 s, t6 0.125 s, t8 0.180 s,
+  //     settled -10.01).
   // (b) quiet-onset control (comfort-quiet): |appliedGainDb| <= 0.1 dB for
   //     the pre-measurement window (guard adds no boost), then the standard
   //     path proceeds (settles, lifting toward the target).
-  // (c) negative control (REQUIRED): the same (a) measurement against the
-  //     pre-change worklet (git HEAD source) must FAIL the 0.5 s bound.
+  //     Measured offline 2026-10-21: max |applied| 0.000 dB over the first
+  //     0.4 s, settled +10.00 dB.
+  // (c) negative control (REQUIRED): the same (a) measurement against a
+  //     guard-disabled variant of the CURRENT worklet source must FAIL the
+  //     0.5 s bound. The variant sets FAST_ONSET_SECONDS to 2 so the fast
+  //     probe never fills during the 1 s render and the cold branch never
+  //     cuts: it must read above -6.0 dB at 0.5 s. A `git show HEAD` comparison is no longer
+  //     usable — HEAD (5.4.1) already contains the ~100 ms onset guard and
+  //     reads -8.11 dB at 0.3 s (-9.30 dB at 0.5 s), so it PASSES the bound
+  //     and the control could never bite. The variant is synthesized at
+  //     runtime from WORKLET_PATH; the replacement must apply or the
+  //     harness fails loudly.
   // (d) no-NaN on every onset trace + digital silence renders bit-zero.
+  // SEE ALSO: qa/feed-transition-qa.cjs (reset-program F1-F6 + A6-INFO cold
+  // onset probes) and qa/program-boundary-qa.cjs (page-hook generation
+  // handoff, 8/8 rows).
   // ------------------------------------------------------------------
   const ONSET_BOUND_05_DB = -6.0;
   const ONSET_BOUND_10_DB = -8.0;
@@ -3004,17 +3025,26 @@ function main() {
         nanFree, verdict,
       });
     }
-    // (c) negative control: the pre-change (git HEAD) worklet must FAIL the
-    // 0.5 s bound on the same measurement.
+    // (c) negative control: a guard-disabled variant of the CURRENT worklet
+    // must FAIL the 0.5 s bound on the same measurement. The variant sets
+    // FAST_ONSET_SECONDS to 2 (a 2 s / 96000-sample window: allocates fine
+    // but never fills during the 1 s A6 render, so the cold probe never
+    // cuts; the slow loop's 0.6 s down-slew only reaches ~-1.5 dB at 0.5 s);
+    // `git show HEAD` is unusable (5.4.1 already guards).
     {
       try {
-        const git = spawnSync('git', ['show', 'HEAD:audio/normalizer-worklet.js'], { cwd: repoRoot, encoding: 'utf8' });
-        if (git.status !== 0 || !git.stdout || !git.stdout.includes('registerProcessor')) {
-          throw new Error(`git show HEAD:audio/normalizer-worklet.js failed: ${String(git.stderr || git.error || git.status).slice(0, 200)}`);
+        const liveSource = fs.readFileSync(WORKLET_PATH, 'utf8');
+        const GUARDneedle = 'var FAST_ONSET_SECONDS = 0.05;';
+        if (!liveSource.includes(GUARDneedle)) {
+          throw new Error(`guard-disabled variant failed: ${GUARDneedle} not found in ${WORKLET_PATH}`);
+        }
+        const disabledSource = liveSource.replace(GUARDneedle, 'var FAST_ONSET_SECONDS = 2;');
+        if (!disabledSource.includes('var FAST_ONSET_SECONDS = 2;')) {
+          throw new Error('guard-disabled variant failed: replacement did not apply');
         }
         const tmpPath = path.join(os.tmpdir(), 'tan-onset-neg-worklet.js');
-        fs.writeFileSync(tmpPath, git.stdout);
-        const OldProc = loadProcessor(git.stdout, SR);
+        fs.writeFileSync(tmpPath, disabledSource);
+        const OldProc = loadProcessor(disabledSource, SR);
         const mono = readWavFloat32Planar(path.join(FIXTURE_DIR, 'comfort-loud.wav')).planar[0];
         const { gainTrace } = renderThroughWorkletChannels(OldProc, [mono], {});
         const old05 = valueAt(gainTrace, 0.5, SR);
@@ -3033,7 +3063,7 @@ function main() {
         onsetRows.push({
           clause: 'onset-negative-control', fixture: 'comfort-loud.wav', rate: '48000',
           valueAt05Db: old05, timeToMinus6S: oldT6, verdict: onsetNeg.verdict,
-          note: 'pre-change worklet must FAIL the 0.5 s bound (proves the gate bites)',
+          note: 'guard-disabled variant must FAIL the 0.5 s bound (proves the gate bites)',
         });
       } catch (e) {
         onsetNeg = { verdict: 'FAIL', note: `negative control failed to run: ${e.message}` };
@@ -3565,20 +3595,20 @@ function main() {
   }
   console.log(`STEP: ${stepSummary}`);
   console.log('');
-  console.log('ONSET (5.4.1 cold-start onset convergence: loud onset cut by 0.5 s, quiet onset untouched, negative control fails pre-change, silence bit-zero):');
+  console.log('ONSET (5.4.2 cold-start onset convergence: loud onset cut by 0.5 s, quiet onset untouched, guard-disabled negative control, silence bit-zero; SEE ALSO qa/feed-transition-qa.cjs + qa/program-boundary-qa.cjs):');
   for (const o of onsetRows) {
     if (o.clause === 'onset-loud') {
       console.log(`onset-loud ${o.fixture} ${o.rate}: applied ${fmt(o.valueAt05Db)} dB @0.5 s (gate <= -6.0), ${fmt(o.valueAt10Db)} dB @1.0 s (gate <= -8.0) | time to -6 dB ${fmt(o.timeToMinus6S, 3)} s, to -8 dB ${fmt(o.timeToMinus8S, 3)} s | settled ${fmt(o.settledGainDb)} dB (min ${fmt(o.gainMinDb)} dB, overshoot ok=${o.overshootOk}, settled=${o.settled} tail ${fmt(o.tailSeconds, 1)} s) | tail ${fmt(o.tailLufs)} LUFS (target ${fmt(EFFECTIVE_TARGET)}, delta ${fmt(o.tailDeltaLufs)} LU, tol +-1.0) | noNaN=${o.nanFree} | verdict ${o.verdict}`);
     } else if (o.clause === 'onset-quiet-control') {
       console.log(`onset-quiet-control ${o.fixture} ${o.rate}: max |applied| first 0.4 s (pre-measurement) ${fmt(o.maxAbsFirst04Db, 3)} dB (gate <= 0.1) | settled=${o.settled} final ${fmt(o.settledGainDb)} dB (standard path proceeds) | noNaN=${o.nanFree} | verdict ${o.verdict}`);
     } else if (o.clause === 'onset-negative-control') {
-      console.log(`onset-negative-control ${o.fixture} ${o.rate}: PRE-CHANGE worklet applied ${fmt(o.valueAt05Db)} dB @0.5 s (must FAIL the -6.0 bound), time to -6 dB ${fmt(o.timeToMinus6S, 3)} s | verdict ${o.verdict}${o.note ? ` — ${o.note}` : ''}`);
+      console.log(`onset-negative-control ${o.fixture} ${o.rate}: GUARD-DISABLED variant applied ${fmt(o.valueAt05Db)} dB @0.5 s (must FAIL the -6.0 bound), time to -6 dB ${fmt(o.timeToMinus6S, 3)} s | verdict ${o.verdict}${o.note ? ` — ${o.note}` : ''}`);
     } else {
       console.log(`${o.clause} ${o.fixture} ${o.rate}: allZero=${o.allZero} noNaN=${o.nanFree} | verdict ${o.verdict}`);
     }
   }
   if (onsetNeg) {
-    console.log(`ONSET old-vs-new: old time-to--6dB ${fmt(onsetNeg.oldTimeToMinus6S, 3)} s, old time-to--8dB ${fmt(onsetNeg.oldTimeToMinus8S, 3)} s, old value@0.5s ${fmt(onsetNeg.oldValueAt05Db)} dB | new value@0.5s ${fmt(onsetNeg.newValueAt05Db)} dB, new time-to--6dB ${fmt(onsetNeg.newTimeToMinus6S, 3)} s, new time-to--8dB ${fmt(onsetNeg.newTimeToMinus8S, 3)} s | old fails 0.5 s bound=${onsetNeg.oldFailsBound} | verdict ${onsetNeg.verdict}`);
+    console.log(`ONSET old-vs-new: guard-disabled value@0.5s ${fmt(onsetNeg.oldValueAt05Db)} dB, time-to--6dB ${fmt(onsetNeg.oldTimeToMinus6S, 3)} s, time-to--8dB ${fmt(onsetNeg.oldTimeToMinus8S, 3)} s | new value@0.5s ${fmt(onsetNeg.newValueAt05Db)} dB, new time-to--6dB ${fmt(onsetNeg.newTimeToMinus6S, 3)} s, new time-to--8dB ${fmt(onsetNeg.newTimeToMinus8S, 3)} s | disabled fails 0.5 s bound=${onsetNeg.oldFailsBound} | verdict ${onsetNeg.verdict}`);
   }
   console.log(`ONSET: ${onsetSummary}`);
   console.log('');
