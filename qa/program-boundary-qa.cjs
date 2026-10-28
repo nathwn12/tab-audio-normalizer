@@ -49,7 +49,14 @@ class FakeMediaElement extends FakeElement {
     this.src = '';
     this.tagName = 'VIDEO';
   }
-  play() { return Promise.resolve(); }
+  play() {
+    if (this.rejectPlay) {
+      const err = new Error('play() rejected by autoplay policy');
+      err.name = 'NotAllowedError';
+      return Promise.reject(err);
+    }
+    return Promise.resolve();
+  }
 }
 
 class FakeAudioNode {
@@ -163,6 +170,8 @@ async function main() {
 
   const A = new FakeMediaElement();
   const B = new FakeMediaElement();
+  const C = new FakeMediaElement();
+  C.rejectPlay = true;
 
   const rows = [];
   async function check(label, action, expectDelta) {
@@ -200,6 +209,13 @@ async function main() {
     await A.play();
   }, 1);
   await check('8 repeated play A -> +0', async () => { await A.play(); }, 0);
+  await check('9 rejected play C -> +0 (no reset)', async () => {
+    await C.play().catch(() => {});
+  }, 0);
+  await check('10 C play after rejection succeeds -> +1', async () => {
+    C.rejectPlay = false;
+    await C.play();
+  }, 1);
 
   console.log('event/message table');
   for (const r of rows) {
@@ -210,7 +226,7 @@ async function main() {
   const monotonic = gens.every((g, i) => Number.isInteger(g) && (i === 0 || g > gens[i - 1]));
   console.log(`generations monotonic integers: ${monotonic ? 'yes' : 'no'}`);
 
-  const allPass = rows.every((r) => r.pass) && monotonic && gens.length === 4;
+  const allPass = rows.every((r) => r.pass) && monotonic && gens.length === 5;
   if (!allPass) {
     console.log('OVERALL: FAIL');
     process.exitCode = 2;

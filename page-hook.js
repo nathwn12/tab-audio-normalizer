@@ -276,12 +276,20 @@
     HTMLMediaElement.prototype.__tnPlay = true;
 
     HTMLMediaElement.prototype.play = function (...args) {
-      if (state.active && (!this.__tnWebAudio || this.__tnAttached)) {
+      const managed = state.active && (!this.__tnWebAudio || this.__tnAttached);
+      if (managed) {
         watchProgramBoundaries(this);
-        handleElementPlaybackStart(this);
         void attachMediaElement(this);
       }
-      return originalPlay.apply(this, args);
+      const started = originalPlay.apply(this, args);
+      // Defer the program-reset decision until playback is confirmed: a
+      // rejected play() (autoplay policy, unsupported source) must not
+      // broadcast a reset. The play/playing listeners stay as the fallback
+      // for paths where play() returns no promise.
+      if (managed && started && typeof started.then === 'function') {
+        started.then(() => handleElementPlaybackStart(this), () => {});
+      }
+      return started;
     };
   }
 

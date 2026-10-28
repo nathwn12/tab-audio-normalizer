@@ -17,4 +17,11 @@ jobs:
         shell: pwsh
       - run: if (Test-Path package.json) { npm run build --if-present }
         shell: pwsh
+      # Tracked, pure-Node QA (no browser, no audio device). Keeps the
+      # feed/program-reset regressions enforced in CI; tests/ and the rest
+      # of qa/ stay local-only per AGENTS.md.
+      - run: node qa/feed-transition-qa.cjs
+        shell: pwsh
+      - run: node qa/program-boundary-qa.cjs
+        shell: pwsh
       - run: npx --yes htmlhint --config .htmlhintrc "**/*.html" 2>$null || npx --yes htmlhint "**/*.html"
