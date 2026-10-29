@@ -103,7 +103,7 @@
  *      Film max boost, §2.1 — the smallest published boost, so quiet is lifted
  *      the least); cut bounded only by the TOTAL clamp. Silence gate (also
  *      loudnorm): below the relative gate the AGC holds its last gain. A boost
- *      is applied only while the ~0.1 s probe is itself below the programme
+ *      is applied only while the ~0.05 s probe is itself below the programme
  *      mean's dead-band edge: the 3 s ST's boxcar otherwise held a boost
  *      ~1.5 s into a loud return, and those mis-lifted samples pushed
  *      comfort-dialogue's settled tail to -20.50 (measured 2026-10-19).
@@ -138,17 +138,17 @@
  *      loop has no measurement, so a loud onset passed uncut for ~400 ms and
  *      then converged with the 0.6 s down time constant (measured 2026-10-19
  *      on comfort-loud: still -1.55 dB at 0.5 s, -6 dB only at ~0.95 s).
- *      A ~100 ms levelled-power probe (FAST_ONSET_SECONDS) drives a CUT-ONLY
- *      (never boost) pre-cut toward the fixed target through a fast (~0.12 s)
- *      log-domain slew, ratcheting down only; the standard slow loop takes
+ *      A ~50 ms levelled-power probe (FAST_ONSET_SECONDS) drives a CUT-ONLY
+ *      (never boost) pre-cut toward the fixed target through a fast (~0.08 s)
+ *      log-domain slew as min(slow, probe) with probe = target - fastLevel - AGC; the standard slow loop takes
  *      over FROM the current gain with no snap (measured 2026-10-19 on the
  *      same program: -9.3 dB by 0.5 s, -9.7 dB by 1.0 s, settled -10.00, never deeper than
- *      settled + 1.5 dB; quiet onset untouched). Still house wiring, not a
+ *      settled + 1.5 dB; quiet onset untouched; feed cut 2026-10-20 re-measured, see the harness table). Still house wiring, not a
  *      sourced value; BS.1770's 400 ms first-block floor remains (the guard
  *      probes, it does not gate).
  *   5. Slew: asymmetric and slow in the log domain — gain increases (louder) use a
  *      ~3.0 s time constant; gain decreases (quieter) use ~0.6 s. The cold-start
- *      onset guard slews with its own fast (~0.12 s) constant while the session
+ *      onset guard slews with its own fast (~0.08 s) constant while the session
  *      is cold (before the first gated levelled block). The user trim ramps per
  *      sample inside one render quantum (no zipper).
  *   6. True-peak limiter LAST: 4x polyphase detector (97-tap Kaiser filter above)
@@ -167,6 +167,19 @@
  *   7. set-mode is retained for compatibility and still clears ONLY the
  *      loudness measurement (both meters); the levelling runs in BOTH modes —
  *      'normalize' and 'level' are the same comfort chain.
+  *   8. FEED BOUNDARY (reset-program, house 2026-10-20): a new program on the
+  *      same element re-uses the live processor, so the host posts
+  *      {type:'reset-program', generation?} at the boundary. The handler folds
+  *      the AGC into the slow gain (total clamped, AGC back to 0 — the first
+  *      post-boundary sample carries the same total gain, no snap), clears
+  *      both loudness measurements, both block sets, the fast probe and the
+  *      onset pre-cut, and goes cold: the probe formula below re-cuts toward
+  *      the new program within ~250 ms. Audio path (delay line, limiter
+  *      schedule/state), both true-peak detector histories, the decaying
+  *      output-peak hold, totalFrames, trim, target, mode and meter cadence
+  *      carry through. Unknown/missing generation is accepted; a generation
+  *      already applied (or an older one) is ignored, so a delayed duplicate
+  *      cannot clear the fresh measurement.
  *
  * INTERFACE (names preserved; set-gain-db semantics are the output trim):
  *   registerProcessor('loudness-normalizer', …); classic script, no imports.
@@ -176,7 +189,8 @@
  *     (never the target, never measured; per-sample ramp within one quantum);
  *     start-normalizing (no-op acknowledgement).
  *   Inbound: set-target-lufs {targetLufs}, set-mode {mode:'normalize'|'level'} (switching mode clears ONLY the loudness measurement -- both K-filter states, both power rings, both retained-block sets, both gated aggregates, momentary/short-term/warm -- so raw-input and levelled blocks can no longer mix; applied program gain (slow + AGC), trim, delay line, limiter targets/gain, both true-peak detector histories and the decaying output-peak hold carry through continuously, so the switch is inaudible apart from normal slew),
- *     reset-meter (full state clear: metering/blocks/warm/gain/detector-history/delay-line/limiter-targets/telemetry, keeps settings).
+ *     reset-meter (full state clear: metering/blocks/warm/gain/detector-history/delay-line/limiter-targets/telemetry, keeps settings),
+  *     reset-program {generation?} (feed boundary: fold AGC into the slow gain clamped to the TOTAL clamp, AGC to 0, then clear both meters/blocks/probe/pre-cut/warm; audio path, detector histories, peak hold, totalFrames, trim, target, mode and meter cadence carry through; telemetry/meterMsg refreshed; unknown/missing generation accepted, an already-applied/older generation ignored as a delayed duplicate).
  *   Outbound: {type:'meter', integratedLufs, shortTermLufs, momentaryLufs, truePeakDb,
  *     appliedGainDb, userTrimDb, mode, warm} about every 48 render quanta.
  *   Documented telemetry surface: this.telemetry with those same fields (integratedLufs/shortTermLufs/momentaryLufs report the RAW program; appliedGainDb is levelling + normalization in dB, EXCLUDING the trim; userTrimDb is the current output trim; truePeakDb is a DECAYING PEAK-HOLD on the DELAYED post-limiter output true peak -- track = max(quantumPeak, quantumPeak + (track - quantumPeak) * exp(-N/(sr*1.5))) with a 1.5 s time constant, so after prior audio a zero-output quantum reports the decayed hold, not -Infinity; -Infinity only when the track is exactly zero (fresh/reset); the hold never under-reports the current quantum's output peak; the undelayed pre-limiter detector reading drives only scheduleLimiter), refreshed on
@@ -218,9 +232,12 @@ var DOWN_TC_SECONDS = 0.6;
 // constant. A fast levelled-power probe (FAST_ONSET_SECONDS) feeds a CUT-ONLY
 // pre-cut toward the fixed target, slewed with FAST_ONSET_TC_SECONDS while
 // the session is cold; the standard loop takes over FROM the current gain.
+// Feed cut 2026-10-20: 0.05 s probe / 0.08 s slew (was 0.1/0.12); the cold
+// branch is now desired = min(slow, probe) with probe = target - fastLevel -
+// AGC (cut-only, clamped), so a program boundary re-cuts within ~250 ms.
 // CPU cost (one extra ring + sum per sample) explicitly accepted by the owner.
-var FAST_ONSET_SECONDS = 0.1;
-var FAST_ONSET_TC_SECONDS = 0.12;
+var FAST_ONSET_SECONDS = 0.05;
+var FAST_ONSET_TC_SECONDS = 0.08;
 
 var CEILING_DB = -1;
 var CEILING_LINEAR = Math.pow(10, CEILING_DB / 20);
@@ -274,7 +291,7 @@ var LIMITER_RELEASE_SECONDS = 0.1;
 //   |d| <= AGC_BAND_DB -> no adaptation at all (the clause-(k) gate)
 //   |d| >  AGC_BAND_DB -> agc = -(d - sign(d) * AGC_BAND_DB),
 //                          compressing the spread back to the band edge.
-// A boost is additionally gated by the ~0.1 s probe: it applies only while
+// A boost is additionally gated by the ~0.05 s probe: it applies only while
 // that probe (its levelled reading with the current AGC gain undone) is itself
 // below G - AGC_BAND_DB, so a loud return is not mis-lifted by the 3 s
 // boxcar's lag (measured: without the gate comfort-dialogue's tail settled at
@@ -519,7 +536,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.integratedLufsLev = -Infinity;
     this.hasGatedLev = false;
 
-    // Onset-guard fast probe: ~0.1 s ring of LEVELLED power (newPLev, the
+    // Onset-guard fast probe: ~0.05 s (50 ms) ring of LEVELLED power (newPLev, the
     // already-computed slow-loop detector input), fed per sample. Preallocated
     // here; process() only reads/writes (real-time discipline).
     this.fastWindow = Math.max(1, Math.round(FAST_ONSET_SECONDS * sr));
@@ -527,10 +544,12 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.fastIndex = 0;
     this.fastCount = 0;
     this.fastSum = 0;
-    // Cold-start pre-cut in dB: CUT ONLY (<= 0), ratchets down only while the
-    // session is cold (!hasGatedLev, fast window full). Quiet content and
-    // digital silence leave it at 0 (clamped, never boost; silence energy 0
-    // reads -Infinity and clamps to 0 — no NaN path).
+    // Cold-cut mirror in dB: diagnostic only, CUT ONLY (<= 0). While the
+    // session is cold (!hasGatedLev, fast window full) it tracks min(slow,
+    // probe) when that is negative, else 0; the desired-gain branch reads the
+    // live probe, never this field. Quiet from unity and digital silence from
+    // unity leave it at 0 (clamped, never boost; silence energy 0 reads
+    // -Infinity and clamps to the boost bound — no NaN path).
     this.onsetCutDb = 0;
 
     this.delayFrames = Math.max(128, Math.round(sr * LOOKAHEAD_SECONDS));
@@ -583,6 +602,12 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.truePeakTrack = 0;
     this.appliedGainDb = 0;
     this.meterCounter = 0;
+    // Feed-boundary tokens (reset-program): the last generation applied to
+    // this processor. The host mints strictly increasing positive integer
+    // generations; a replay of that token (or an older one) names a program
+    // that already started and must not clear measurements accumulated
+    // since (a delayed duplicate). 0 = no numbered generation applied yet.
+    this.lastAppliedResetGeneration = 0;
 
     this.rawScratch = new Float64Array(6);
     this.preScratch = new Float64Array(6);
@@ -655,6 +680,19 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       if (data.type === 'reset-meter') {
         self.resetMeter();
       }
+      if (data.type === 'reset-program') {
+        // Feed boundary: generation tokens are exactly-once. A duplicate or
+        // older generation is a delayed message for a program that already
+        // started, so it is ignored before it can clear the fresh
+        // measurement; unknown/missing generations carry no token to compare
+        // and are accepted (legacy senders).
+        var gen = data.generation;
+        if (typeof gen === 'number' && Number.isInteger(gen)) {
+          if (gen <= self.lastAppliedResetGeneration) return;
+          self.lastAppliedResetGeneration = gen;
+        }
+        self.resetProgram();
+      }
     };
   }
 
@@ -668,7 +706,8 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     // soon as the new mode gates, ~400 ms, instead of a 3 s unity drift).
     // DELIBERATELY PRESERVED for gain continuity: currentLoudnessDb/
     // currentAgcDb/appliedGainDb (no snap to unity), the onset pre-cut
-    // onsetCutDb (no snap: the cold-window desired gain stays where it is),
+    // onsetCutDb (diagnostic mirror of the cold cut; the cold branch reads the
+    // live probe, so carrying it is continuity-neutral),
     // trim (a user setting), the full audio path (channelBuffers/writeIndex/
     // limiterTargets/currentLimiterGain), both true-peak
     // detector histories (interpZ/interpZi/outInterpZ/outInterpZi) and
@@ -705,9 +744,9 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.integratedLufsLev = -Infinity;
     this.hasGatedLev = false;
     // Onset-guard fast probe is measurement: ring/sum/count clear with the
-    // rest. onsetCutDb is PRESERVED (see above): clearing it to 0 would snap
-    // the cold-window desired gain to unity; the fresh probe ratchets it down
-    // again from the preserved value once the fast window refills.
+    // rest. onsetCutDb is PRESERVED (see above) as a diagnostic; the cold
+    // branch recomputes desired = min(slow, probe) from the refilling probe,
+    // so the surviving value is never read back into the gain.
     this.fastRing.fill(0);
     this.fastIndex = 0;
     this.fastCount = 0;
@@ -725,6 +764,90 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.meterMsg.warm = false;
     this.telemetry.mode = this.mode;
     this.meterMsg.mode = this.mode;
+  }
+
+  resetProgram() {
+    // Feed-boundary reset (reset-program): the NEXT program starts cold but
+    // WITHOUT an audible snap. The AGC (fast mover) folds into the slow gain
+    // so the total program gain is preserved across the boundary:
+    //   slow = clamp(slow + agc, -MAX_CUT_DB, +MAX_BOOST_DB); agc = 0.
+    // The first post-boundary sample therefore carries the same total gain as
+    // the last pre-boundary sample; the cold probe formula in process() then
+    // re-cuts toward the NEW program from that gain with the fast slew.
+    // Clears: K-filter states, power rings/sums, retained blocks and stamps,
+    // gated aggregates, meanAbsRaw, momentary/short-term, hasGated/hasGatedLev,
+    // warm, the fast probe ring/sum/index/count, and onsetCutDb.
+    // Preserves: the folded slow gain, trim, the full audio path
+    // (channelBuffers/writeIndex/limiterTargets/currentLimiterGain), both
+    // true-peak detector histories, truePeakTrack, totalFrames, targetLufs,
+    // mode, the meter cadence and all settings. The message handler drops an
+    // already-applied/older generation (exactly-once token), so a delayed
+    // duplicate never reaches this clear; a direct repeat call still folds
+    // agc 0 into the same total.
+    // Message-handler context: fill() only, no process()-rate constraint.
+    var folded = this.currentLoudnessDb + this.currentAgcDb;
+    if (!Number.isFinite(folded)) folded = 0;
+    if (folded > MAX_BOOST_DB) folded = MAX_BOOST_DB;
+    if (folded < -MAX_CUT_DB) folded = -MAX_CUT_DB;
+    this.currentLoudnessDb = folded;
+    this.currentAgcDb = 0;
+    var ch;
+    for (ch = 0; ch < 6; ch++) {
+      var v = this.filtV[ch];
+      v[0] = 0; v[1] = 0; v[2] = 0; v[3] = 0; v[4] = 0;
+      var vL = this.filtVLev[ch];
+      vL[0] = 0; vL[1] = 0; vL[2] = 0; vL[3] = 0; vL[4] = 0;
+    }
+    this.pRing.fill(0);
+    this.pIndex = 0;
+    this.pCount = 0;
+    this.sumShort = 0;
+    this.sumBlock = 0;
+    this.hopCounter = 0;
+    this.blocks.fill(0);
+    this.blockWrite = 0;
+    this.blockCount = 0;
+    this.integratedEnergy = 0;
+    this.integratedLufs = -Infinity;
+    this.hasGated = false;
+    this.meanAbsRaw = 0;
+    this.pRingLev.fill(0);
+    this.sumShortLev = 0;
+    this.sumBlockLev = 0;
+    this.blocksLev.fill(0);
+    this.blockSampleLev.fill(0);
+    this.blockWriteLev = 0;
+    this.blockCountLev = 0;
+    this.integratedEnergyLev = 0;
+    this.integratedLufsLev = -Infinity;
+    this.hasGatedLev = false;
+    this.fastRing.fill(0);
+    this.fastIndex = 0;
+    this.fastCount = 0;
+    this.fastSum = 0;
+    this.onsetCutDb = 0;
+    this.warm = false;
+    this.momentaryLufs = -Infinity;
+    this.shortTermLufs = -Infinity;
+    this.appliedGainDb = this.currentLoudnessDb;
+    this.telemetry.normGainDb = this.currentLoudnessDb;
+    this.telemetry.integratedLufs = -Infinity;
+    this.telemetry.shortTermLufs = -Infinity;
+    this.telemetry.momentaryLufs = -Infinity;
+    this.telemetry.truePeakDb = this.truePeakTrack > 0 ? 20 * Math.log10(this.truePeakTrack) : -Infinity;
+    this.telemetry.appliedGainDb = this.appliedGainDb;
+    this.telemetry.userTrimDb = this.trimCurrentDb;
+    this.telemetry.mode = this.mode;
+    this.telemetry.warm = false;
+    this.meterMsg.integratedLufs = -Infinity;
+    this.meterMsg.shortTermLufs = -Infinity;
+    this.meterMsg.momentaryLufs = -Infinity;
+    this.meterMsg.truePeakDb = this.telemetry.truePeakDb;
+    this.meterMsg.appliedGainDb = this.appliedGainDb;
+    this.meterMsg.normGainDb = this.currentLoudnessDb;
+    this.meterMsg.userTrimDb = this.trimCurrentDb;
+    this.meterMsg.mode = this.mode;
+    this.meterMsg.warm = false;
   }
 
   resetMeter() {
@@ -1085,20 +1208,36 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     // trim is NOT here — it joins the delay line below, inside the detector's
     // view, outside every loudness measurement.
     var wantWarmLev = this.totalFrames >= Math.round(sr * WARM_SECONDS) && this.hasGatedLev;
-    // Onset-guard update (cold only, fast window full): CUT-ONLY pre-cut from
-    // the fast levelled probe toward the fixed target; ratchets down only, so
-    // quiet content (want >= 0) and digital silence (energy 0 reads -Infinity,
-    // want +Infinity) both leave onsetCutDb at 0. NaN-safe: a non-finite want
-    // fails the <= test and clamps to 0, and the ratchet compares finite
-    // values only.
+    // Cold-program probe (cold only): CUT-ONLY pre-cut from the fast levelled
+    // probe toward the fixed target. probe = target - fastLevel - AGC,
+    // clamped to the TOTAL clamp, then desired = min(slow, probe): the total
+    // program gain (slow + AGC) drives the probe level to the target, a loud
+    // onset (or a loud program after a feed boundary) is cut from ~50 ms once
+    // the fast window fills, and quiet content or digital silence probes
+    // at/above the current gain so min() holds the last gain (silence never
+    // re-targets). Before the fast window fills the probe is empty and this
+    // holds the incoming slow gain exactly (fresh: unity; post-boundary: the
+    // folded total — no snap either way). NaN-safe: a non-finite fastLevel
+    // (silence energy 0 reads -Infinity, hence probe +Infinity) clamps to the
+    // boost bound and min() holds current; a non-finite probe falls back to
+    // the boost bound the same way. onsetCutDb mirrors the cold cut
+    // (diagnostic only: the desired value below reads the probe, never this
+    // field). Handoff: when hasGatedLev first becomes true the slow loop
+    // above takes over FROM the current gain — no snap, no reset of
+    // currentLoudnessDb.
+    var coldDesired = this.currentLoudnessDb;
     if (!this.hasGatedLev && this.fastCount >= this.fastWindow) {
       var fastLevelDb = energyToLoudness(this.fastSum / this.fastWindow);
-      var wantOnset = this.targetLufs - fastLevelDb;
-      var onsetCut = 0;
-      if (wantOnset <= 0) {
-        onsetCut = wantOnset < -MAX_CUT_DB ? -MAX_CUT_DB : wantOnset;
+      var probeDesired = MAX_BOOST_DB;
+      if (Number.isFinite(fastLevelDb)) {
+        probeDesired = this.targetLufs - fastLevelDb - this.currentAgcDb;
+        if (probeDesired > MAX_BOOST_DB) probeDesired = MAX_BOOST_DB;
+        else if (probeDesired < -MAX_CUT_DB) probeDesired = -MAX_CUT_DB;
+        if (!Number.isFinite(probeDesired)) probeDesired = MAX_BOOST_DB;
       }
-      if (onsetCut < this.onsetCutDb) this.onsetCutDb = onsetCut;
+      if (probeDesired < coldDesired) coldDesired = probeDesired;
+      if (coldDesired < 0) this.onsetCutDb = coldDesired;
+      else this.onsetCutDb = 0;
     }
     var desiredLoudnessDb = 0;
     if (wantWarmLev) {
@@ -1109,20 +1248,14 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       if (need < normMin) need = normMin;
       desiredLoudnessDb = need;
     } else if (!this.hasGatedLev) {
-      // Cold window: the onset pre-cut REPLACES the hold-at-current value, so
-      // a loud onset is cut from ~100 ms instead of passing uncut until the
-      // first gated block. Before the fast window is full onsetCutDb is still
-      // 0 and this holds unity exactly like before. Handoff: when hasGatedLev
-      // first becomes true the slow loop above takes over FROM the current
-      // gain — no snap, no reset of currentLoudnessDb.
-      desiredLoudnessDb = this.onsetCutDb;
+      desiredLoudnessDb = coldDesired;
     }
     // Silence gate (§6: silence holds the last gain, never re-targets): with
-    // no gated program inside the rolling window — startup, post-reset, or a
-    // silence long enough to empty the window - the cold-window desired gain
-    // below (the frozen onset pre-cut, i.e. the last gain: silence probes
-    // +Infinity-want and clamps to 0, so the ratchet keeps the stale pre-cut)
-    // instead of slewing toward unity or toward stale retained history.
+    // no gated program inside the rolling window — startup, post-boundary, or
+    // a silence long enough to empty the window — the cold-window desired
+    // above (min(slow, probe): silence/quiet probes clamp to the boost bound,
+    // so min() holds the last gain) instead of slewing toward unity or toward
+    // stale retained history.
     // (During shorter silences the window still holds program blocks but no
     // new block is retained, so integratedLufsLev is frozen and the slew
     // already holds; the AGC branch holds the same way via its own gate.)
@@ -1189,7 +1322,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
             // 3 s ST boxcar lags a loud return, so the boost stayed +6 for
             // ~1.5 s after comfort-dialogue's 20 s loud return and those
             // lifted samples pushed the settled tail to -20.50 (gate +-0.20).
-            // A boost is therefore applied only while the ~0.1 s probe is
+            // A boost is therefore applied only while the ~0.05 s probe is
             // itself below the programme mean's dead-band edge (raw domain;
             // the probe's levelled reading has the AGC's current gain undone
             // to compare like with like). The cut direction is untouched (S4).
@@ -1264,7 +1397,7 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       }
       if (!Number.isFinite(newP)) newP = 0;
       if (!Number.isFinite(newPLev)) newPLev = 0;
-      // Onset-guard fast probe: levelled power into the ~0.1 s ring (one
+      // Onset-guard fast probe: levelled power into the ~0.05 s ring (one
       // extra ring + sum per sample — owner-accepted CPU cost).
       var fastOut = this.fastCount >= this.fastWindow ? this.fastRing[this.fastIndex] : 0;
       this.fastSum += newPLev - fastOut;

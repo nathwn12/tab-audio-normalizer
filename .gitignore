@@ -24,3 +24,5 @@ Thumbs.db
 !qa/
 qa/*
 !qa/loudness-verify.cjs
+!qa/feed-transition-qa.cjs
+!qa/program-boundary-qa.cjs

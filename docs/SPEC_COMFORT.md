@@ -1,5 +1,7 @@
 # SPEC: comfort loudness chain
 
+> Amended by `docs/SPEC_FEED.md` for per-program reset and the 0.05 s probe; the H5/A6 numbers below remain the historical pre-feed record.
+
 Status: frozen. Judge the chain against this document.
 
 ## 1. Outcome
