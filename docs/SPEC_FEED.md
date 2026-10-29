@@ -38,9 +38,12 @@ stall (`waiting` then `playing`) are continuity, never a boundary. A
 `play()` attempt whose promise has not resolved is not a start: while it
 is pending its `play`/`playing` events cannot reset, and a rejected
 attempt leaves the program untouched; the resolved promise confirms the
-start. Evidence: `qa/program-boundary-qa.cjs`, 10/10 rows PASS,
-generations [1, 2, 3, 4, 5] monotonic. Control: rows 2/3/4/8/9 assert +0
-resets, row 9 rejecting after emitting `play` + `playing`.
+start. Evidence: `qa/program-boundary-qa.cjs`, 13/13 rows PASS,
+generations [1, 2, 3, 4, 5, 6, 7] monotonic. Control: rows 2/3/4/8/9/11
+assert +0 resets; row 9 rejects after emitting `play` + `playing`; rows
+11–13 overlap two attempts on one element — the first rejects while the
+second stays pending (+0), the second resolves (+1 confirmed start), and a
+later dirty start still resets (+1).
 
 F2. Reset semantics. `reset-program` folds `currentAgcDb` into
 `currentLoudnessDb` (clamped to the total −20/+12 dB clamp) and zeroes
@@ -50,8 +53,10 @@ slow gain, trim, delay line, limiter schedule/state, both true-peak
 histories, `truePeakTrack`, `totalFrames`, target/mode/cadence; refreshes
 telemetry. The applied gain does not move at the reset instant.
 Evidence: `qa/feed-transition-qa.cjs` F2 continuity row (+0.000 dB,
-bound 0.1; duplicate generation +0.000). Control: a reset-to-unity fix
-fails this row (~6 dB step).
+bound 0.1; duplicate generation +0.000) and DUP delayed-dup row (gen 7
+replayed plus gen 6 after a resume changes 0 measurement fields; the next
+new generation, 8, still applies the full clear). Control: a
+reset-to-unity fix fails this row (~6 dB step).
 
 F3. Carry-over cold gain. After reset the branch runs
 `desired = min(slow, probe)` with `probe = target − fastLevel − AGC`,

@@ -29,11 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `reset-program` worklet contract (generation-token idempotent reset;
   AGC fold, meter/probe clear, audio-path preserve; never reset at attach
   time) — see `docs/SPEC_FEED.md`.
-- `qa/feed-transition-qa.cjs` (F1–F6 transition harness, ALL PASS) and
-  `qa/program-boundary-qa.cjs` (page-hook handoff, 8/8 rows PASS); the
-  release gate's ONSET −6 dB check stays at 0.5 s and its negative control
-  is a guard-disabled variant (must read above −6.0 dB at 0.5 s, reads
-  −1.55 dB).
+- `qa/feed-transition-qa.cjs` (F1–F6 transition harness, 11/11 rows PASS,
+  including the delayed-duplicate-after-resume row) and
+  `qa/program-boundary-qa.cjs` (page-hook handoff, 13/13 rows PASS,
+  generations [1–7], overlap rows 11–13); the release gate's ONSET −6 dB
+  check stays at 0.5 s and its negative control is a guard-disabled
+  variant (must read above −6.0 dB at 0.5 s, reads −1.55 dB).
 
 ## [5.4.1] - 2026-10-19
 
