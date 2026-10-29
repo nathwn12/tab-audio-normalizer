@@ -87,6 +87,7 @@ interface HTMLMediaElement {
   __tnPlay?: boolean;
   __tnWebAudio?: boolean;
   __tnAttached?: boolean;
+  __tnPlayPending?: boolean;
 }
 
 // No augmentation needed for HTMLOrSVGScriptElement (it's a type alias, not an interface)

@@ -279,15 +279,35 @@
       const managed = state.active && (!this.__tnWebAudio || this.__tnAttached);
       if (managed) {
         watchProgramBoundaries(this);
+        // Silence the play/playing listeners for this attempt until its
+        // promise settles: a listener must not reset ahead of a start that
+        // is then rejected. Muting still happens synchronously in
+        // attachMediaElement, before the original play().
+        this.__tnPlayPending = true;
         void attachMediaElement(this);
       }
-      const started = originalPlay.apply(this, args);
-      // Defer the program-reset decision until playback is confirmed: a
-      // rejected play() (autoplay policy, unsupported source) must not
-      // broadcast a reset. The play/playing listeners stay as the fallback
-      // for paths where play() returns no promise.
+      let started;
+      try {
+        started = originalPlay.apply(this, args);
+      } catch (err) {
+        if (managed) this.__tnPlayPending = false;
+        throw err;
+      }
+      // Single reset decision: a confirmed start. The promise path owns it
+      // while an attempt is pending; the listeners take over only when
+      // play() returns no promise to confirm with.
       if (managed && started && typeof started.then === 'function') {
-        started.then(() => handleElementPlaybackStart(this), () => {});
+        started.then(
+          () => {
+            this.__tnPlayPending = false;
+            handleElementPlaybackStart(this);
+          },
+          () => {
+            this.__tnPlayPending = false;
+          },
+        );
+      } else if (managed) {
+        this.__tnPlayPending = false;
       }
       return started;
     };
@@ -593,7 +613,8 @@
   // program; replay after ended. Not a new program: pause/resume, seek
   // within the same program, waiting/playing buffer stall, repeated
   // play() while already playing. Never resets at attach time; only
-  // when the element actually starts playing.
+  // after a confirmed start — the resolved play() promise, or a start
+  // event with no play() attempt pending.
   /** @param {any} mediaElement */
   function watchProgramBoundaries(mediaElement) {
     if (!mediaElement || mediaElement.__tnProgramWatched) return;
@@ -608,9 +629,18 @@
       mediaElement.addEventListener('pause', () => {
         try { mediaElement.__tnPlaying = false; } catch {}
       });
-      mediaElement.addEventListener('play', () => handleElementPlaybackStart(mediaElement));
-      mediaElement.addEventListener('playing', () => handleElementPlaybackStart(mediaElement));
+      mediaElement.addEventListener('play', () => handlePlaybackSignal(mediaElement));
+      mediaElement.addEventListener('playing', () => handlePlaybackSignal(mediaElement));
     } catch {}
+  }
+
+  // The only gate on the listener path: an attempt whose play() promise has
+  // not resolved yet must not reset; a start outside play() (autoplay, a
+  // resumed element) has no pending attempt and resets as before.
+  /** @param {any} mediaElement */
+  function handlePlaybackSignal(mediaElement) {
+    if (!mediaElement || mediaElement.__tnPlayPending) return;
+    handleElementPlaybackStart(mediaElement);
   }
 
   /** @param {any} mediaElement */

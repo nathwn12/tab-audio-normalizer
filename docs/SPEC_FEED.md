@@ -34,9 +34,13 @@ target, persistence, popup, or user trim. No browser audio path changes.
 F1. Boundary signal. A new program is detected on media-element
 `loadstart` / `emptied` / `ended`-then-`play`, on a different element
 starting, or on a dirty same element starting. Pause/resume, seek, and
-stall (`waiting` then `playing`) are continuity, never a boundary.
-Evidence: `qa/program-boundary-qa.cjs`, 8/8 rows PASS, generations
-[1, 2, 3, 4] monotonic. Control: rows 2/3/4/8 assert +0 resets.
+stall (`waiting` then `playing`) are continuity, never a boundary. A
+`play()` attempt whose promise has not resolved is not a start: while it
+is pending its `play`/`playing` events cannot reset, and a rejected
+attempt leaves the program untouched; the resolved promise confirms the
+start. Evidence: `qa/program-boundary-qa.cjs`, 10/10 rows PASS,
+generations [1, 2, 3, 4, 5] monotonic. Control: rows 2/3/4/8/9 assert +0
+resets, row 9 rejecting after emitting `play` + `playing`.
 
 F2. Reset semantics. `reset-program` folds `currentAgcDb` into
 `currentLoudnessDb` (clamped to the total −20/+12 dB clamp) and zeroes

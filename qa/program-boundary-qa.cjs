@@ -50,7 +50,14 @@ class FakeMediaElement extends FakeElement {
     this.tagName = 'VIDEO';
   }
   play() {
-    if (this.rejectPlay) {
+    const fail = this.rejectPlay;
+    // A real element fires `play` (and `playing` once it has data) before
+    // play()'s promise settles — including for an attempt that is then
+    // interrupted and rejected. Modelling those events is what covers the
+    // listener path; the promise alone would not.
+    this.dispatchEvent({ type: 'play' });
+    this.dispatchEvent({ type: 'playing' });
+    if (fail) {
       const err = new Error('play() rejected by autoplay policy');
       err.name = 'NotAllowedError';
       return Promise.reject(err);
@@ -209,7 +216,7 @@ async function main() {
     await A.play();
   }, 1);
   await check('8 repeated play A -> +0', async () => { await A.play(); }, 0);
-  await check('9 rejected play C -> +0 (no reset)', async () => {
+  await check('9 rejected play C (emits play+playing) -> +0 (no reset)', async () => {
     await C.play().catch(() => {});
   }, 0);
   await check('10 C play after rejection succeeds -> +1', async () => {
