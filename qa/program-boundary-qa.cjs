@@ -48,15 +48,27 @@ class FakeMediaElement extends FakeElement {
     this.muted = false;
     this.src = '';
     this.tagName = 'VIDEO';
+    this.deferredPlays = [];
   }
   play() {
-    const fail = this.rejectPlay;
     // A real element fires `play` (and `playing` once it has data) before
     // play()'s promise settles — including for an attempt that is then
     // interrupted and rejected. Modelling those events is what covers the
     // listener path; the promise alone would not.
     this.dispatchEvent({ type: 'play' });
     this.dispatchEvent({ type: 'playing' });
+    if (this.deferPlay) {
+      // Overlapping-attempt model: the caller settles each attempt
+      // individually, in any order, while the others stay pending.
+      const attempt = {};
+      const promise = new Promise((resolve, reject) => {
+        attempt.resolve = resolve;
+        attempt.reject = reject;
+      });
+      this.deferredPlays.push(attempt);
+      return promise;
+    }
+    const fail = this.rejectPlay;
     if (fail) {
       const err = new Error('play() rejected by autoplay policy');
       err.name = 'NotAllowedError';
@@ -179,6 +191,7 @@ async function main() {
   const B = new FakeMediaElement();
   const C = new FakeMediaElement();
   C.rejectPlay = true;
+  const D = new FakeMediaElement();
 
   const rows = [];
   async function check(label, action, expectDelta) {
@@ -223,6 +236,27 @@ async function main() {
     C.rejectPlay = false;
     await C.play();
   }, 1);
+  // F1 overlap: two attempts on one element, settled out of order. While ANY
+  // attempt is unresolved its play/playing events must not reset; the first
+  // attempt rejecting must not open the gate for the second.
+  await check('11 overlap D: reject first, second still pending -> +0', async () => {
+    D.deferPlay = true;
+    void D.play().catch(() => {});
+    void D.play().catch(() => {});
+    D.deferredPlays[0].reject(new Error('interrupted by a newer load'));
+    await sleep(0);
+    D.dispatchEvent({ type: 'playing' }); // second attempt still unresolved
+  }, 0);
+  await check('12 overlap D: second resolves -> +1 (confirmed start)', async () => {
+    D.deferredPlays[1].resolve();
+  }, 1);
+  // Positive control: the last settle must clear the gate, or 11/12 would
+  // pass with the gate stuck closed forever.
+  await check('13 D dirty after last settle -> +1', async () => {
+    D.deferPlay = false;
+    D.dispatchEvent({ type: 'loadstart' });
+    D.dispatchEvent({ type: 'playing' });
+  }, 1);
 
   console.log('event/message table');
   for (const r of rows) {
@@ -233,7 +267,7 @@ async function main() {
   const monotonic = gens.every((g, i) => Number.isInteger(g) && (i === 0 || g > gens[i - 1]));
   console.log(`generations monotonic integers: ${monotonic ? 'yes' : 'no'}`);
 
-  const allPass = rows.every((r) => r.pass) && monotonic && gens.length === 5;
+  const allPass = rows.every((r) => r.pass) && monotonic && gens.length === 7;
   if (!allPass) {
     console.log('OVERALL: FAIL');
     process.exitCode = 2;

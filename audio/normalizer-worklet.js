@@ -177,8 +177,9 @@
   *      the new program within ~250 ms. Audio path (delay line, limiter
   *      schedule/state), both true-peak detector histories, the decaying
   *      output-peak hold, totalFrames, trim, target, mode and meter cadence
-  *      carry through. Unknown/missing generation is accepted; a duplicate is
-  *      a harmless no-op (fold of 0 into the same total).
+  *      carry through. Unknown/missing generation is accepted; a generation
+  *      already applied (or an older one) is ignored, so a delayed duplicate
+  *      cannot clear the fresh measurement.
  *
  * INTERFACE (names preserved; set-gain-db semantics are the output trim):
  *   registerProcessor('loudness-normalizer', …); classic script, no imports.
@@ -189,7 +190,7 @@
  *     start-normalizing (no-op acknowledgement).
  *   Inbound: set-target-lufs {targetLufs}, set-mode {mode:'normalize'|'level'} (switching mode clears ONLY the loudness measurement -- both K-filter states, both power rings, both retained-block sets, both gated aggregates, momentary/short-term/warm -- so raw-input and levelled blocks can no longer mix; applied program gain (slow + AGC), trim, delay line, limiter targets/gain, both true-peak detector histories and the decaying output-peak hold carry through continuously, so the switch is inaudible apart from normal slew),
  *     reset-meter (full state clear: metering/blocks/warm/gain/detector-history/delay-line/limiter-targets/telemetry, keeps settings),
-  *     reset-program {generation?} (feed boundary: fold AGC into the slow gain clamped to the TOTAL clamp, AGC to 0, then clear both meters/blocks/probe/pre-cut/warm; audio path, detector histories, peak hold, totalFrames, trim, target, mode and meter cadence carry through; telemetry/meterMsg refreshed; unknown/missing generation accepted, duplicates harmless).
+  *     reset-program {generation?} (feed boundary: fold AGC into the slow gain clamped to the TOTAL clamp, AGC to 0, then clear both meters/blocks/probe/pre-cut/warm; audio path, detector histories, peak hold, totalFrames, trim, target, mode and meter cadence carry through; telemetry/meterMsg refreshed; unknown/missing generation accepted, an already-applied/older generation ignored as a delayed duplicate).
  *   Outbound: {type:'meter', integratedLufs, shortTermLufs, momentaryLufs, truePeakDb,
  *     appliedGainDb, userTrimDb, mode, warm} about every 48 render quanta.
  *   Documented telemetry surface: this.telemetry with those same fields (integratedLufs/shortTermLufs/momentaryLufs report the RAW program; appliedGainDb is levelling + normalization in dB, EXCLUDING the trim; userTrimDb is the current output trim; truePeakDb is a DECAYING PEAK-HOLD on the DELAYED post-limiter output true peak -- track = max(quantumPeak, quantumPeak + (track - quantumPeak) * exp(-N/(sr*1.5))) with a 1.5 s time constant, so after prior audio a zero-output quantum reports the decayed hold, not -Infinity; -Infinity only when the track is exactly zero (fresh/reset); the hold never under-reports the current quantum's output peak; the undelayed pre-limiter detector reading drives only scheduleLimiter), refreshed on
@@ -601,6 +602,12 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     this.truePeakTrack = 0;
     this.appliedGainDb = 0;
     this.meterCounter = 0;
+    // Feed-boundary tokens (reset-program): the last generation applied to
+    // this processor. The host mints strictly increasing positive integer
+    // generations; a replay of that token (or an older one) names a program
+    // that already started and must not clear measurements accumulated
+    // since (a delayed duplicate). 0 = no numbered generation applied yet.
+    this.lastAppliedResetGeneration = 0;
 
     this.rawScratch = new Float64Array(6);
     this.preScratch = new Float64Array(6);
@@ -674,9 +681,16 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
         self.resetMeter();
       }
       if (data.type === 'reset-program') {
-        // Feed boundary: unknown/missing generation accepted, duplicates
-        // harmless (fold of 0 into the same total is a no-op). No allocation
-        // discipline issue here: message-handler allocation is fine.
+        // Feed boundary: generation tokens are exactly-once. A duplicate or
+        // older generation is a delayed message for a program that already
+        // started, so it is ignored before it can clear the fresh
+        // measurement; unknown/missing generations carry no token to compare
+        // and are accepted (legacy senders).
+        var gen = data.generation;
+        if (typeof gen === 'number' && Number.isInteger(gen)) {
+          if (gen <= self.lastAppliedResetGeneration) return;
+          self.lastAppliedResetGeneration = gen;
+        }
         self.resetProgram();
       }
     };
@@ -766,8 +780,10 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     // Preserves: the folded slow gain, trim, the full audio path
     // (channelBuffers/writeIndex/limiterTargets/currentLimiterGain), both
     // true-peak detector histories, truePeakTrack, totalFrames, targetLufs,
-    // mode, the meter cadence and all settings. Idempotent: a duplicate folds
-    // agc 0 into the same total and re-clears already-empty measurement.
+    // mode, the meter cadence and all settings. The message handler drops an
+    // already-applied/older generation (exactly-once token), so a delayed
+    // duplicate never reaches this clear; a direct repeat call still folds
+    // agc 0 into the same total.
     // Message-handler context: fill() only, no process()-rate constraint.
     var folded = this.currentLoudnessDb + this.currentAgcDb;
     if (!Number.isFinite(folded)) folded = 0;

@@ -271,43 +271,83 @@
     };
   }
 
+  // Pending play() attempts, per element. Every play() call adds its own
+  // token and removes it when its promise settles; the listener gate is
+  // "this element has at least one unresolved attempt". A single boolean
+  // was cleared by whichever attempt settled first, so a still-pending
+  // attempt's later play/playing events could reset (SPEC F1).
+  /** @type {WeakMap<object, Set<object>>} */
+  const pendingPlayAttempts = new WeakMap();
+
+  /** @param {any} mediaElement */
+  function beginPlayAttempt(mediaElement) {
+    let attempts = pendingPlayAttempts.get(mediaElement);
+    if (!attempts) {
+      attempts = new Set();
+      pendingPlayAttempts.set(mediaElement, attempts);
+    }
+    const token = {};
+    attempts.add(token);
+    return token;
+  }
+
+  /**
+   * @param {any} mediaElement
+   * @param {object} token
+   * @param {boolean} confirmed
+   */
+  function finishPlayAttempt(mediaElement, token, confirmed) {
+    const attempts = pendingPlayAttempts.get(mediaElement);
+    if (attempts) {
+      attempts.delete(token);
+      if (attempts.size === 0) pendingPlayAttempts.delete(mediaElement);
+    }
+    // The promise, not the event stream, owns the reset decision: a resolved
+    // attempt confirms a start even while another attempt is still pending.
+    // The token set above keeps the listeners closed until the LAST attempt
+    // settles, so an earlier settle can never open that gate.
+    if (confirmed) handleElementPlaybackStart(mediaElement);
+  }
+
+  /** @param {any} mediaElement */
+  function hasPendingPlayAttempt(mediaElement) {
+    const attempts = pendingPlayAttempts.get(mediaElement);
+    return !!attempts && attempts.size > 0;
+  }
+
   function patchPlay() {
     if (HTMLMediaElement.prototype.__tnPlay) return;
     HTMLMediaElement.prototype.__tnPlay = true;
 
     HTMLMediaElement.prototype.play = function (...args) {
       const managed = state.active && (!this.__tnWebAudio || this.__tnAttached);
+      let attempt = null;
       if (managed) {
         watchProgramBoundaries(this);
-        // Silence the play/playing listeners for this attempt until its
+        // Close the play/playing listener path for THIS attempt until its
         // promise settles: a listener must not reset ahead of a start that
         // is then rejected. Muting still happens synchronously in
         // attachMediaElement, before the original play().
-        this.__tnPlayPending = true;
+        attempt = beginPlayAttempt(this);
         void attachMediaElement(this);
       }
       let started;
       try {
         started = originalPlay.apply(this, args);
       } catch (err) {
-        if (managed) this.__tnPlayPending = false;
+        if (attempt) finishPlayAttempt(this, attempt, false);
         throw err;
       }
       // Single reset decision: a confirmed start. The promise path owns it
       // while an attempt is pending; the listeners take over only when
       // play() returns no promise to confirm with.
-      if (managed && started && typeof started.then === 'function') {
+      if (attempt && started && typeof started.then === 'function') {
         started.then(
-          () => {
-            this.__tnPlayPending = false;
-            handleElementPlaybackStart(this);
-          },
-          () => {
-            this.__tnPlayPending = false;
-          },
+          () => { finishPlayAttempt(this, attempt, true); },
+          () => { finishPlayAttempt(this, attempt, false); },
         );
-      } else if (managed) {
-        this.__tnPlayPending = false;
+      } else if (attempt) {
+        finishPlayAttempt(this, attempt, false);
       }
       return started;
     };
@@ -634,12 +674,13 @@
     } catch {}
   }
 
-  // The only gate on the listener path: an attempt whose play() promise has
-  // not resolved yet must not reset; a start outside play() (autoplay, a
-  // resumed element) has no pending attempt and resets as before.
+  // The only gate on the listener path: while ANY play() attempt for the
+  // element is unresolved its play/playing events must not reset; a start
+  // outside play() (autoplay, a resumed element) has no pending attempt and
+  // resets as before.
   /** @param {any} mediaElement */
   function handlePlaybackSignal(mediaElement) {
-    if (!mediaElement || mediaElement.__tnPlayPending) return;
+    if (!mediaElement || hasPendingPlayAttempt(mediaElement)) return;
     handleElementPlaybackStart(mediaElement);
   }
 

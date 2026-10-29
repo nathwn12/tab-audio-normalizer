@@ -156,14 +156,14 @@ function main() {
     push('REF-settled', 'spreadA=' + fmt(sA.spread) + ' spreadB=' + fmt(sB.spread), '<=0.300', true, '');
   }
 
-  // MAIN: A -> reset-program (x2: missing + duplicate generation) -> B.
+  // MAIN: A -> reset-program (missing generation, then numbered generation) -> B.
   const proc = new Proc();
   proc.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   render(proc, makeSine(AMP_A, PRE_A_SEC));
   const preReset = proc.telemetry.appliedGainDb;
   proc.port.onmessage({ data: { type: 'reset-program' } });
   const postImmediate = proc.currentLoudnessDb + proc.currentAgcDb;
-  proc.port.onmessage({ data: { type: 'reset-program', generation: 7 } }); // duplicate: no-op
+  proc.port.onmessage({ data: { type: 'reset-program', generation: 7 } }); // first numbered token applies
   const postDup = proc.currentLoudnessDb + proc.currentAgcDb;
   const rMain = render(proc, makeSine(AMP_B, POST_SEC));
   const f2 = Math.abs(postImmediate - preReset);
@@ -198,6 +198,42 @@ function main() {
     if (d > maxUp) maxUp = d;
   }
   push('QUIET max+400ms', fmt(maxUp) + ' dB', '<=+0.100', Number.isFinite(maxUp) && maxUp <= 0.1, 'pre=' + fmt(preQ));
+
+  // DELAYED DUPLICATE after resume: once generation N has been applied, a
+  // replayed N (or any older token) arriving later must not clear the fresh
+  // measurements accumulated since N — generation tokens are exactly-once.
+  const procDup = new Proc();
+  procDup.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
+  render(procDup, makeSine(AMP_A, PRE_A_SEC));
+  procDup.port.onmessage({ data: { type: 'reset-program', generation: 7 } });
+  render(procDup, makeSine(AMP_B, POST_SEC)); // resume on B: fresh measurement
+  const dupSnapshot = () => ({
+    currentLoudnessDb: procDup.currentLoudnessDb,
+    currentAgcDb: procDup.currentAgcDb,
+    integratedLufs: procDup.integratedLufs,
+    integratedLufsLev: procDup.integratedLufsLev,
+    hasGated: procDup.hasGated,
+    hasGatedLev: procDup.hasGatedLev,
+    blockCount: procDup.blockCount,
+    blockCountLev: procDup.blockCountLev,
+    fastCount: procDup.fastCount,
+    fastSum: procDup.fastSum,
+    onsetCutDb: procDup.onsetCutDb,
+    shortTermLufs: procDup.shortTermLufs,
+    warm: procDup.warm,
+  });
+  const beforeDup = dupSnapshot();
+  procDup.port.onmessage({ data: { type: 'reset-program', generation: 7 } }); // delayed duplicate
+  procDup.port.onmessage({ data: { type: 'reset-program', generation: 6 } }); // older token
+  const afterDup = dupSnapshot();
+  const dupChanged = Object.keys(beforeDup).filter((k) => !Object.is(beforeDup[k], afterDup[k]));
+  push('DUP delayed-dup', 'fields changed=' + dupChanged.length + (dupChanged.length ? ' [' + dupChanged.join(',') + ']' : ''), '0', dupChanged.length === 0, 'gen 7 replayed + gen 6 after resume');
+  // Positive control: a NEW generation must still apply the full reset.
+  procDup.port.onmessage({ data: { type: 'reset-program', generation: 8 } });
+  const afterNew = dupSnapshot();
+  const newApplied = afterNew.integratedLufs === -Infinity && afterNew.hasGated === false &&
+    afterNew.fastCount === 0 && afterNew.blockCount === 0 && afterNew.onsetCutDb === 0 && afterNew.warm === false;
+  push('DUP new gen applies', 'cleared=' + (newApplied ? 'yes' : 'no'), 'yes', newApplied, 'gen 8');
 
   // NEGATIVE control: A -> B with NO reset must FAIL the 250 ms bound.
   const procN = new Proc();
